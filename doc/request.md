@@ -5,15 +5,19 @@
 
 ---
 
-## 0. 사전 결정 사항 (설계 확정 필요, 문서에 반드시 고정)
+## 0. 설계 확정 사항 (Decision Log)
 
-과제 요구사항 상 "택 1"이 필요한 항목들. 구현 전에 아래를 결정하고 README.md에 명시해야 한다.
+과제 요구사항 상 "택 1"이 필요했던 항목들을 아래와 같이 확정한다. README.md에도 동일하게 명시해야 한다.
 
-- [ ] **저장 포맷**: JSONL vs CSV 중 1개 선택 (권장: JSONL — 특수문자/쉼표 포함 메모·태그 처리에 유리)
-- [ ] **update 방식**: 옵션 기반(`--id --date ...`) vs 대화형 중 1개 고정 (권장: 옵션 기반 — search/delete와 일관성, 자동화 가능)
-- [ ] **카테고리 초기화 정책**: (안 A) 기본 카테고리 자동 생성 vs (안 B) `category add` 선행 유도 (권장: 안 A — add 첫 실행 경험 개선)
-- [ ] **저장 폴더 기본값**: `./data` (요구사항 권장값 그대로 사용, `--data-dir`로 변경 가능하게)
-- [ ] **거래 ID 형식**: 예시 형식 `TX-000012` 채택 여부 결정 (순번 zero-padding 6자리 권장)
+- [x] **저장 포맷**: **JSONL** (`transactions.jsonl`) — 특수문자/쉼표 포함 메모·태그 처리에 유리
+- [x] **update 방식**: **옵션 기반** (`update --id <id> [--date ...] [--type ...] [--category ...] [--amount ...] [--memo ...] [--tags ...]`) — search/delete와 CLI 패턴 일관성, 자동화 가능
+- [x] **카테고리 초기화 정책**: **안 B** — 카테고리가 비어있으면 `add`를 막고 `category add`를 먼저 하도록 안내 (기본 카테고리 자동 생성 없음)
+- [x] **저장 폴더 기본값**: `./data` (`--data-dir` 옵션으로 변경 가능)
+- [x] **거래 ID 형식**: zero-padding 없는 정수 표시 `TX-1`, `TX-2`, ... (내부적으로는 순번 정수, 화면 표시 시에만 `TX-` 접두어 부착). zero-padding(`TX-000012`) 방식은 채택하지 않음 — 자릿수 고정 시 대용량 데이터에서 자릿수 초과 문제가 생기기 때문
+- [x] **저장 엔진 구조**: append-only 로그(JSONL) + 위치 기반 고정폭 이진 인덱스 조합 채택 (상세는 2번 섹션 참조)
+- [x] **거래 id 재번호(renumbering) 정책**: **채택하지 않음**. 삭제 후에도 id는 재사용/재정렬하지 않으며, 중간에 빈 번호(gap)가 생기는 것을 정상 상태로 간주한다.
+  - **이유**: (1) 레코드 본문에 id가 저장돼 있어 재번호하려면 해당 레코드를 다시 써야 하고, 자릿수가 바뀌면 append-only 로그의 불변 전제가 깨짐 (2) "위치=id"인 이진 인덱스 설계상 재번호는 뒤따르는 슬롯을 전부 밀어야 해서 O(1) 삭제가 O(n)이 됨 (3) 은행 거래번호·세금계산서 번호처럼 실제 회계 시스템도 취소된 번호를 재사용하지 않는 것이 감사(audit) 관점에서 안전함
+  - **"빈 번호가 보기 싫다"는 심미적 요구는 화면 표시 계층에서 해결**: `list`/`search` 출력 시 왼쪽에 별도의 화면용 순번(1, 2, 3...)을 매겨서 보여주고, 내부 참조/검색/수정/삭제는 항상 불변 id(`TX-14`)를 그대로 사용한다.
 
 ---
 
@@ -24,14 +28,17 @@
 - [ ] 날짜 형식(YYYY-MM-DD) 검증 → 실패 시 재입력 요구 또는 오류+힌트 출력
 - [ ] 타입은 `income`/`expense`만 허용 → 그 외 값 재입력 요구
 - [ ] 금액은 양수(0 초과)만 허용 → 음수/0/숫자 아님 시 재입력 요구
-- [ ] 카테고리는 등록된 목록에 존재해야 함 → 없으면 안내 후 재입력 또는 등록 유도
+- [ ] **카테고리 파일이 비어있으면 `add` 자체를 막고, `[오류] 등록된 카테고리가 없습니다 / [힌트] category add로 먼저 등록하세요` 출력 후 종료** (0번 확정: 안 B)
+- [ ] 카테고리는 등록된 목록에 존재해야 함 → 없으면 안내 후 재입력 요구 (자유 텍스트 오타/신규 카테고리 자동 생성 없음)
 - [ ] 메모/태그는 선택 입력(엔터로 스킵 가능), 태그는 쉼표 구분 파싱
-- [ ] 저장 성공 시 `[저장 완료] id=TX-000012` 형태로 생성된 id 출력
-- [ ] 저장은 파일에 append 방식(JSONL 등)으로 안전하게 기록
+- [ ] 저장 성공 시 `[저장 완료] id=TX-3` 형태로 생성된 id 출력 (zero-padding 없음)
+- [ ] 저장 절차: (1) `transactions.jsonl`에 레코드 append → (2) 반환된 byte 범위로 `transactions.idx`의 해당 슬롯 기록 (2번 섹션 참조)
 
 ### 1-2. 거래 목록 (list)
 - [ ] `--limit N` 옵션 지원 (기본값 지정, 예: 20)
-- [ ] 최신순(날짜/생성순 내림차순) 정렬 출력
+- [ ] 최신순(id 내림차순) 정렬 출력 — `transactions.idx`를 뒤에서부터 순회하여 구현 (2번 섹션 참조)
+- [ ] id는 삭제돼도 재번호하지 않으므로 목록에 빈 번호(gap)가 나타날 수 있음 — 정상 동작 (0번 확정 참조)
+- [ ] (선택) 가독성을 위해 출력 왼쪽에 화면용 순번(1, 2, 3...)을 별도로 매겨 표시 가능 — 내부 id와는 무관한 표시 전용 값
 - [ ] 파일 전체를 메모리에 한 번에 로드하지 않고 **제너레이터(yield) 기반 스트리밍**으로 읽기
 - [ ] `--help` 로 사용법 출력 지원
 
@@ -42,8 +49,8 @@
 - [ ] `--q` (메모 키워드 검색)
 - [ ] `--tag` (태그 필터)
 - [ ] 여러 조건 동시 지정 시 AND 조건으로 결합
-- [ ] 결과 최신순 정렬 출력
-- [ ] 제너레이터 기반 스트리밍 유지 (list와 필터 로직 공유 검토)
+- [ ] 결과 최신순 정렬 출력 (list와 동일한 `iter_latest_transactions()` 제너레이터를 필터링해서 재사용)
+- [ ] 제너레이터 기반 스트리밍 유지
 - [ ] `--help` 지원
 
 ### 1-4. 월별 요약 (summary)
@@ -68,27 +75,26 @@
 - [ ] `category add` — 대화형 또는 옵션으로 카테고리명 입력, 중복 방지
 - [ ] `category list` — 전체 카테고리 목록 출력
 - [ ] `category remove` — 카테고리 삭제
-- [ ] 삭제 대상 카테고리를 사용 중인 거래가 있는지 검사
-- [ ] 사용 중이면: (정책 택1) 삭제 차단 메시지 출력 OR 대체 카테고리 지정 요구 → 문서에 고정
+- [ ] 삭제 대상 카테고리를 사용 중인 거래가 있는지 검사 (`iter_latest_transactions()`를 조기 종료(early-exit) 스캔하여 판정 — 별도 카운터 캐시 불필요)
+- [ ] 사용 중이면: 삭제 차단 메시지 출력 (대체 카테고리 요구 방식은 채택하지 않음 — 단순성 우선)
 - [ ] categories 파일에 영구 저장
 
 ### 1-7. 거래 수정 (update)
-- [ ] 0번 항목에서 확정한 방식(옵션 or 대화형)으로 구현, README에 명시
-- [ ] `--id` (또는 대화형 id 입력)로 대상 조회
-- [ ] 존재하지 않는 id 처리 → "없는 데이터" 메시지 출력
-- [ ] 필드별 부분 수정 지원 (date/type/category/amount/memo/tags)
-- [ ] 수정 시에도 값 검증(날짜 형식, 양수 금액, 허용 type, 존재 category) 동일 적용
+- [ ] **옵션 기반**으로 구현 (0번 확정): `update --id <id> [--date ...] [--type ...] [--category ...] [--amount ...] [--memo ...] [--tags ...]`
+- [ ] 지정하지 않은 필드는 기존 값 유지
+- [ ] `--id`로 `transactions.idx`에서 해당 슬롯 조회 → 존재하지 않거나 삭제된 슬롯(`start==end==0`)이면 "없는 데이터" 메시지 출력
+- [ ] 필드별 부분 수정 지원, 수정 시에도 값 검증(날짜 형식, 양수 금액, 허용 type, 존재 category) 동일 적용
 - [ ] 성공/실패 메시지 출력
-- [ ] 파일 전체 재작성 시 임시 파일 + rename(원자적 교체) 방식 적용
+- [ ] 저장 절차: (1) 수정된 전체 레코드를 `transactions.jsonl` **끝에 append** → (2) 새 byte 범위로 `transactions.idx`의 **해당 id 슬롯을 in-place 덮어쓰기** (전체 파일 재작성 없음, 2번 섹션 참조)
 
 ### 1-8. 거래 삭제 (delete)
 - [ ] `delete --id <id>` 구현
-- [ ] 존재하지 않는 id 처리 → 오류 메시지 출력
+- [ ] `transactions.idx`에서 해당 슬롯 조회 → 존재하지 않거나 이미 삭제된 슬롯이면 오류 메시지 출력
 - [ ] 삭제 성공 메시지 출력
-- [ ] 파일 재작성 시 임시 파일 + rename 방식 적용 (update와 로직 공유 검토)
+- [ ] 저장 절차: `transactions.idx`의 해당 id 슬롯(16바이트)을 전부 0으로 덮어쓰기 (`transactions.jsonl`은 건드리지 않음 — 고아 데이터로 남았다가 `compact` 시 정리됨)
 
 ### 1-9. 가져오기/내보내기 (import/export)
-- [ ] `import --from <csv>` — CSV 읽어 거래 일괄 등록
+- [ ] `import --from <csv>` — CSV 읽어 거래 일괄 등록 (내부적으로 add와 동일한 append+idx 갱신 절차 재사용)
 - [ ] import 시 행 단위 검증(날짜/타입/카테고리/금액) 및 실패 행 skip 처리, 처리 건수(imported/skipped) 출력
 - [ ] `export --out <csv>` — 조건에 맞는 거래를 CSV로 저장
 - [ ] export는 `--month` 또는 (`--from` AND `--to`) 중 최소 1개 조건 필수 → 미지정 시 오류 처리
@@ -102,50 +108,138 @@
 
 ---
 
-## 2. 데이터/저장 요구사항 체크리스트
+## 2. 저장 엔진 설계 (Storage Engine Design) — 확정안
 
-- [ ] Transaction 데이터 모델을 `dataclass`로 정의 (필드: id, type, date, amount, category, memo, tags)
-- [ ] 최소 2개 이상 클래스 사용 (예: `Transaction`, `TransactionRepository`, `CategoryStore`, `BudgetStore`, `BudgetService`)
-- [ ] 저장 파일 3개 이상 분리: `transactions.<fmt>`, `categories.<fmt>`, `budgets.<fmt>`
-- [ ] 기본 저장 폴더 `./data`, `--data-dir` 옵션으로 변경 가능하게 구현
-- [ ] 프로그램 최초 실행 시(파일 없음) 자동 생성 또는 초기화 안내 메시지 출력
-- [ ] 카테고리 파일 비어있을 때 정책(0번에서 결정) 적용
-- [ ] update/delete 시 원자적 교체(임시 파일 → os.replace) 적용하여 쓰기 도중 실패해도 원본 보존
+`transactions`에 한해 "append-only 로그 + 위치 기반 고정폭 이진 인덱스" 구조를 채택한다. `categories`/`budgets`는 데이터 양이 적으므로 단순 JSONL 전체 재작성(임시파일+`os.replace`) 방식으로 충분하다.
+
+### 2-1. 파일 구성
+
+| 파일 | 역할 | 포맷 |
+|---|---|---|
+| `data/transactions.jsonl` | 거래 원본 데이터. **append-only** (update도 새 버전을 끝에 append, 기존 내용은 절대 수정/삭제하지 않음) | 텍스트, JSON 한 줄 = 레코드 1개 |
+| `data/transactions.idx` | id → 현재 유효 byte 위치 매핑. **위치 기반 고정폭 이진 배열** | 이진, 슬롯당 16바이트 |
+| `data/categories.jsonl` | 카테고리 목록 | 텍스트 JSONL, 전체 재작성 방식 |
+| `data/budgets.jsonl` | 월별 예산 | 텍스트 JSONL, 전체 재작성 방식 |
+
+### 2-2. `transactions.idx` 슬롯 포맷
+
+- 슬롯 크기: **16바이트** = `startOffset(8B, unsigned) + endOffset(8B, unsigned)` (`struct.pack("<QQ", start, end)`)
+- **슬롯 위치 = 거래 id**: id `N`의 슬롯은 파일의 `(N-1) * 16` 바이트 위치에 있다 (id는 1부터 시작). 슬롯 안에 id 자체를 저장하지 않음 — 위치가 곧 id.
+- **삭제 표시(sentinel)**: `start == 0 and end == 0` → 삭제됨. 실제 레코드는 항상 `end > start`이므로 TX-1(오프셋 0에서 시작)이 살아있어도 `(0, 0)`과 절대 혼동되지 않는다.
+- **다음 id 계산**: `next_id = idx_파일크기 // 16 + 1`. 슬롯은 삭제돼도 파일에서 제거되지 않고 0으로만 초기화되므로, id가 재사용되는 일이 없다 (별도 카운터 파일 불필요).
+
+### 2-3. 연산별 동작
+
+| 연산 | transactions.jsonl | transactions.idx |
+|---|---|---|
+| add | 끝에 새 레코드 append, 시작/끝 offset 기록 | 파일을 16바이트만큼 늘리며 새 슬롯 `(start, end)` 기록 |
+| update | **끝에 수정된 전체 레코드를 새로 append** (기존 줄은 그대로 방치) | 해당 id 슬롯 `(id-1)*16` 위치를 새 offset으로 **덮어쓰기** (`r+b` 모드) |
+| delete | 아무 것도 하지 않음 | 해당 id 슬롯을 16바이트 전부 0으로 덮어쓰기 |
+| compact | 살아있는 슬롯(`start != end`)의 데이터만 읽어 새 파일에 옮겨쓰고 통째로 교체 | 같은 id 슬롯 위치에 **새 offset 값만 갱신** (슬롯 개수/순서는 불변) |
+
+### 2-4. 조회 시 최신순 스트리밍
+
+`transactions.idx`는 고정폭 이진 레코드이므로 텍스트(JSONL)와 달리 **역순 순회에 UTF-8 멀티바이트 경계 문제가 없다**. id가 큰 슬롯(=최근 생성)부터 역순으로 읽으면 별도 정렬 없이 최신순이 보장된다.
+
+```python
+def iter_latest_transactions() -> Iterator[Transaction]:
+    total = idx_slot_count()                      # idx파일크기 // 16
+    with open(IDX_PATH, "rb") as idx, open(LOG_PATH, "rb") as log:
+        for slot in range(total, 0, -1):           # 최근 id부터 역순
+            idx.seek((slot - 1) * 16)
+            start, end = struct.unpack("<QQ", idx.read(16))
+            if start == 0 and end == 0:
+                continue                             # 삭제된 슬롯
+            log.seek(start)
+            yield Transaction.from_json(log.read(end - start))
+```
+
+`list`, `search`, `summary`, `category remove`(사용중 여부 판정), `export`가 모두 이 제너레이터 하나를 기반으로 필터링/조기종료하여 동작한다.
+
+### 2-5. 컴팩션(compact)
+
+update가 누적될수록 `transactions.jsonl`에는 예전 버전(고아 데이터)이 계속 쌓인다. 이를 정리하는 `compact` 절차:
+
+```python
+def compact() -> None:
+    tmp = LOG_PATH.with_suffix(".tmp")
+    with open(IDX_PATH, "r+b") as idx, \
+         open(LOG_PATH, "rb") as src, \
+         open(tmp, "wb") as dst:
+        total = idx_slot_count()
+        for slot in range(total):
+            idx.seek(slot * 16)
+            start, end = struct.unpack("<QQ", idx.read(16))
+            if start == 0 and end == 0:
+                continue                            # 죽은 슬롯은 건드리지 않음
+            src.seek(start)
+            data = src.read(end - start)
+            new_start = dst.tell()
+            dst.write(data)
+            idx.seek(slot * 16)
+            idx.write(struct.pack("<QQ", new_start, new_start + len(data)))
+    os.replace(tmp, LOG_PATH)
+```
+
+- 살아있는 슬롯만 골라 새 로그 파일로 옮겨 적고(가져갈 것만 챙기고 헌 집은 통째로 교체하는 방식 — 죽은 바이트 위치를 알아낼 필요 자체가 없음), `os.replace`로 원자적 교체한다.
+- idx는 슬롯 개수·순서가 그대로 유지된 채 offset 값만 갱신되므로 id 재매핑이 필요 없다.
+- **실행 시점**: 이 프로그램은 명령마다 새로 뜨는 1회성 CLI라 진짜 "유휴시간 자동 실행"은 불가능하다. 아래 중 하나로 트리거한다.
+  - [ ] (권장) 명시적 `compact` 커맨드 제공 (보너스 "백업" 커맨드와 유사한 유지보수용 명령)
+  - [ ] (선택) 매 커맨드 실행 시작 시 고아 데이터 비율이 임계치를 넘으면 자동 실행 (opportunistic compaction)
+
+### 2-6. 알려진 한계 (README에 명시할 것)
+
+- [ ] offset이 8바이트라 이론상 로그 파일 상한은 매우 크지만(사실상 무제한 수준), 이 규모의 개인 가계부에서는 문제되지 않음을 명시
+- [ ] idx 슬롯 in-place 덮어쓰기(16바이트) 도중 정확히 그 순간 프로세스가 강제 종료되면 해당 슬롯이 손상될 이론적 가능성이 있음 (WAL 등 완전한 크래시 안전성은 이 과제 범위 밖) — README에 알려진 한계로 기술
+- [ ] `transactions.jsonl` 자체는 컴팩션 전까지 계속 커질 수 있음 → `compact` 명령으로 정리 가능함을 안내
 
 ---
 
-## 3. 아키텍처/구조 요구사항 체크리스트
+## 3. 데이터/저장 요구사항 체크리스트
+
+- [ ] Transaction 데이터 모델을 `dataclass`로 정의 (필드: id, type, date, amount, category, memo, tags)
+- [ ] 최소 2개 이상 클래스 사용 (예: `Transaction`, `TransactionRepository`, `TransactionIndex`, `CategoryStore`, `BudgetStore`, `BudgetService`)
+- [ ] 저장 파일 3개 이상 분리: `transactions.jsonl`, `transactions.idx`, `categories.jsonl`, `budgets.jsonl` (총 4개 — 요구사항의 "3개 이상" 충족)
+- [ ] 기본 저장 폴더 `./data`, `--data-dir` 옵션으로 변경 가능하게 구현
+- [ ] 프로그램 최초 실행 시(파일 없음) 자동 생성 (빈 `transactions.jsonl`/`transactions.idx`/`categories.jsonl`/`budgets.jsonl`)
+- [ ] 카테고리 파일이 비어있으면 `add` 차단 + `category add` 유도 (0번 확정: 안 B)
+- [ ] `categories.jsonl`/`budgets.jsonl`은 임시 파일 + `os.replace` 원자적 교체로 재작성
+- [ ] `transactions.idx`는 슬롯 단위 in-place 덮어쓰기, `transactions.jsonl`은 append 전용(컴팩션 시에만 재작성)
+
+---
+
+## 4. 아키텍처/구조 요구사항 체크리스트
 
 - [ ] 모듈 3개 이상으로 분리 (권장 구조):
-  - [ ] `models.py` — Transaction 등 데이터 구조 (dataclass, 타입 힌트)
-  - [ ] `repository.py` — 파일 I/O, 제너레이터 기반 스트리밍 읽기, 원자적 쓰기
+  - [ ] `models.py` — `Transaction` dataclass, 커스텀 예외 (타입 힌트 포함)
+  - [ ] `repository.py` — `transactions.jsonl`/`transactions.idx` I/O, 제너레이터 기반 조회, in-place 인덱스 갱신, `compact()`
+  - [ ] `category_store.py` / `budget_store.py` (또는 `repository.py`에 통합) — 카테고리/예산 JSONL 재작성 로직
   - [ ] `services.py` — 검증/검색/요약/예산 계산 등 비즈니스 로직
   - [ ] `cli.py` — argparse 기반 커맨드 파싱 및 대화형 입력 처리
   - [ ] `decorators.py` — 공통 관심사(로그/예외/시간 측정) 데코레이터
   - [ ] `__main__.py` — `python -m budget_app` 진입점
-- [ ] 각 계층의 책임을 README 또는 코드 주석 최소화하되 구조로 명확히 분리 (모델/저장소/서비스/CLI)
+- [ ] 각 계층의 책임을 모델/저장소/서비스/CLI로 명확히 분리
 - [ ] 모든 공개 함수/메서드에 타입 힌트 적용 (매개변수, 반환값)
 
 ---
 
-## 4. 제너레이터 요구사항 체크리스트
+## 5. 제너레이터 요구사항 체크리스트
 
-- [ ] transactions 파일 읽기 함수는 `yield`를 사용한 제너레이터로 구현 (예: `def iter_transactions() -> Iterator[Transaction]`)
-- [ ] list/search 모두 이 제너레이터를 소비하는 방식으로 구현 (전체 리스트 로드 금지)
-- [ ] "최신순 정렬"과 "스트리밍"이 상충하지 않도록 설계 검토
-  - 참고 구현 전략: 파일을 역순으로 읽거나, limit/필터 적용 후 필요한 만큼만 정렬 버퍼링하는 방식 채택 (완전한 무제한 스트리밍이 어렵다면, "한 번에 전체를 리스트 변수로 로드하지 않고 제너레이터를 경유해 순회 처리한다"는 최소 요건은 반드시 충족)
+- [ ] `iter_latest_transactions() -> Iterator[Transaction]` — `transactions.idx`를 역순으로 순회하며 `transactions.jsonl`에서 해당 byte 범위만 읽어 `yield` (2-4 참조)
+- [ ] list/search/summary/category remove/export 모두 이 제너레이터를 소비 (전체 리스트를 변수에 로드하지 않음)
+- [ ] 고정폭 이진 인덱스를 역순 순회하므로 텍스트 역순 읽기의 UTF-8 경계 문제가 없음을 확인
 
 ---
 
-## 5. 데코레이터 요구사항 체크리스트
+## 6. 데코레이터 요구사항 체크리스트
 
 - [ ] 데코레이터 최소 1개 구현 및 실제 커맨드 함수에 적용
-- [ ] 후보: `@log_call` (실행 로그), `@handle_errors` (예외 처리 → 원인+힌트 출력 후 sys.exit), `@timeit` (실행 시간 측정)
+- [ ] 후보: `@log_call` (실행 로그), `@handle_errors` (예외 처리 → 원인+힌트 출력 후 `sys.exit`), `@timeit` (실행 시간 측정)
 - [ ] 여러 데코레이터를 조합 적용 시 `functools.wraps` 사용하여 메타데이터 보존
 
 ---
 
-## 6. 입력 검증 요구사항 체크리스트
+## 7. 입력 검증 요구사항 체크리스트
 
 - [ ] 날짜 형식 검증 (`datetime.strptime(value, "%Y-%m-%d")` 활용, 실패 시 오류)
 - [ ] 금액 검증: 정수/양수 여부
@@ -155,7 +249,7 @@
 
 ---
 
-## 7. 오류 처리 / 종료 코드 요구사항 체크리스트
+## 8. 오류 처리 / 종료 코드 요구사항 체크리스트
 
 - [ ] 커스텀 예외 클래스 정의 (예: `ValidationError`, `NotFoundError`)
 - [ ] 모든 예외는 스택트레이스 대신 `[오류] 원인` + `[힌트] 해결 방법` 형태로 출력
@@ -165,45 +259,55 @@
 
 ---
 
-## 8. CLI 규칙 체크리스트
+## 9. CLI 규칙 체크리스트
 
 - [ ] 모든 옵션은 `--` 표기로 통일 (`--help`, `--limit`, `--from`, `--to`, `--month`, `--top`, `--id`, `--amount`, `--category`, `--type`, `--q`, `--tag`, `--out`, `--data-dir` 등)
-- [ ] `argparse`의 subparsers로 `add/list/search/summary/budget/category/update/delete/import/export` 서브커맨드 구성
+- [ ] `argparse`의 subparsers로 `add/list/search/summary/budget/category/update/delete/import/export` (+ `compact`) 서브커맨드 구성
 - [ ] `python -m budget_app <command> [options]` 형태로 실행 가능하도록 `__main__.py` 구성
 
 ---
 
-## 9. README.md 필수 포함 항목 체크리스트
+## 10. README.md 필수 포함 항목 체크리스트
 
 - [ ] 실행 방법 (`python -m budget_app ...` 예시, Python 버전 요구사항)
-- [ ] 저장 파일 위치/형식 (`./data/transactions.jsonl` 등, 포맷 선택 이유)
-- [ ] 주요 명령 예시 (add/list/search/summary/budget/category/update/delete/import/export 각각 최소 1개 실행 예시)
+- [ ] 저장 파일 위치/형식: `./data/transactions.jsonl`(로그) + `./data/transactions.idx`(16B 고정 이진 인덱스) + `./data/categories.jsonl` + `./data/budgets.jsonl`, 각각의 역할과 포맷 선택 이유
+- [ ] `transactions.idx`의 구조(슬롯=id 위치, 16바이트, 삭제 시 0 초기화)와 `compact` 명령의 필요성 설명
+- [ ] 주요 명령 예시 (add/list/search/summary/budget/category/update/delete/import/export/compact 각각 최소 1개 실행 예시)
 - [ ] import/export CSV 스키마 표 (date/type/category/amount/memo/tags, required 여부, UTF-8/헤더 포함 명시)
-- [ ] update 방식 고정 여부 명시 (옵션 vs 대화형)
-- [ ] 카테고리 초기화 정책 명시
-- [ ] (선택) 아키텍처/모듈 구조 설명
+- [ ] update 방식 고정: 옵션 기반이라고 명시
+- [ ] 카테고리 초기화 정책 명시: 안 B(카테고리 없으면 add 차단 + 안내)
+- [ ] 2-6의 "알려진 한계" 명시
+- [ ] 아키텍처/모듈 구조 설명
 
 ---
 
-## 10. 보너스 과제 체크리스트 (선택)
+## 11. 보너스 과제 체크리스트 (선택)
 
 - [ ] 백업 기능: `backup` 커맨드로 타임스탬프 포함 백업 파일 생성 (예: `data/backup/20240115_120000/`)
 - [ ] 반복 내역 기능: 반복 규칙 등록 및 특정 월 자동 생성 로직
 - [ ] 출력 포맷 테이블 정렬: 외부 라이브러리 없이 컬럼 폭 계산하여 정렬 출력하는 포맷터 분리
-- [ ] 저장 원자성 강화: 모든 쓰기 작업(add 포함)에 임시 파일 + rename 적용 검토
+- [ ] 저장 원자성 강화: `categories.jsonl`/`budgets.jsonl` 재작성에도 임시 파일 + rename 일관 적용 (transactions는 2번 섹션 설계로 이미 반영됨)
 
 ---
 
-## 11. 구현 순서 제안 (실행 계획)
+## 12. 구현 순서 제안 (실행 계획)
 
-1. [ ] 프로젝트 스캐폴딩: `budget_app/` 패키지 생성, 위 6개 모듈 파일 생성, `data/` 폴더 및 `.gitignore` 정리
+1. [ ] 프로젝트 스캐폴딩: `budget_app/` 패키지 생성, 모듈 파일 생성, `data/` 폴더 및 `.gitignore` 정리
 2. [ ] `models.py`: `Transaction` dataclass, 커스텀 예외 클래스 정의
-3. [ ] `repository.py`: JSONL(or CSV) 읽기(제너레이터)/append/원자적 재작성 함수, `CategoryStore`, `BudgetStore` 구현
+3. [ ] `repository.py` — 핵심 저장 엔진 구현 (2번 섹션 기준):
+   - [ ] `append_transaction(tx) -> int` (log append + idx 슬롯 추가, 신규 id 반환)
+   - [ ] `read_transaction(tx_id) -> Transaction | None` (idx 단일 슬롯 조회 + log seek)
+   - [ ] `update_transaction(tx_id, tx) -> bool` (log append + idx 슬롯 덮어쓰기)
+   - [ ] `delete_transaction(tx_id) -> bool` (idx 슬롯 0 초기화)
+   - [ ] `iter_latest_transactions() -> Iterator[Transaction]` (idx 역순 순회 제너레이터)
+   - [ ] `compact() -> None`
+   - [ ] `CategoryStore`, `BudgetStore` (JSONL 전체 재작성 방식)
 4. [ ] `decorators.py`: `handle_errors`, `log_call`, `timeit` 구현
 5. [ ] `services.py`: 검증 로직, 검색/필터, summary 집계, budget 사용률 계산, import/export 변환 로직
-6. [ ] `cli.py`: argparse 서브커맨드 정의, 각 커맨드별 대화형/옵션 입력 처리, 출력 포맷팅
+6. [ ] `cli.py`: argparse 서브커맨드 정의(`add/list/search/summary/budget/category/update/delete/import/export/compact`), 대화형/옵션 입력 처리, 출력 포맷팅
 7. [ ] `__main__.py`: 진입점 연결, 최상위 예외 처리 및 종료 코드 처리
-8. [ ] 초기 실행 시나리오 테스트 (파일 없음 → 자동 생성/안내)
-9. [ ] 10대 기능 수동 테스트 (섹션 1 체크리스트 기준)
-10. [ ] README.md 작성 (섹션 9 체크리스트 기준)
-11. [ ] (선택) 보너스 과제 구현
+8. [ ] 초기 실행 시나리오 테스트 (파일 없음 → 자동 생성, 카테고리 없이 add 시도 → 차단 메시지)
+9. [ ] 저장 엔진 단위 테스트: add 여러 건 → update → delete → list(최신순 확인) → compact 후 데이터 무결성 확인
+10. [ ] 10대 기능 수동 테스트 (섹션 1 체크리스트 기준)
+11. [ ] README.md 작성 (섹션 10 체크리스트 기준)
+12. [ ] (선택) 보너스 과제 구현
