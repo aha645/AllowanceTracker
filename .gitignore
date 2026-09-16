@@ -1,0 +1,12 @@
+# 가계부 데이터(로컬 전용) — 실제 거래 기록은 저장소에 커밋하지 않는다
+data/
+
+# 원자적 교체용 임시 파일
+*.tmp
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
