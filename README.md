@@ -24,11 +24,146 @@ python -m budget_app --data-dir ~/my-budget list
 python -m budget_app --verbose list      # 실행 로그/시간 측정 출력(디버그용)
 ```
 
-테스트 실행:
+### 테스트 실행
+
+외부 라이브러리 없이 표준 `unittest`로 작성되어 있고(총 83개), **두 계층**으로 나뉩니다.
+
+| 계층 | 파일 | 무엇을 검증하는가 | 호출 방식 |
+|---|---|---|---|
+| **기능(인수) 테스트** | `tests/test_features.py` | `doc/request.md` 1번 섹션의 **10대 기능 + 보너스**가 요구사항 문서 순서 그대로, 항목별로 하나씩 실제 동작하는가 (`test_01_add_...` ~ `test_12_compact_...`) | CLI를 블랙박스로 호출(`main(argv)`), 출력 문자열만으로 판단 |
+| **내부 단위테스트** | `tests/test_repository.py`<br>`tests/test_services.py`<br>`tests/test_formatter.py`<br>`tests/test_cli.py` | 그 기능을 구현하는 각 계층(저장 엔진 / 검증·서비스 로직 / 표 포맷터 / CLI 인자·오류 처리)이 내부적으로 올바른가 | 해당 계층의 파이썬 API를 직접 호출 |
+
+즉 "요구사항 하나하나가 검증되는가?"는 `test_features.py`의 메서드 이름을 보면 바로
+답이 나오고, "왜 되는가(내부 구현이 맞는가)?"는 나머지 4개 파일이 계층별로 답합니다.
+`test_cli.py`의 `test_08_full_workflow`처럼 여러 기능을 하나로 엮은 엔드투엔드 회귀
+시나리오도 별도로 유지합니다.
 
 ```bash
-python -m unittest discover -s tests -v   # 50개 테스트
+# 전체 테스트 자동 탐색 실행 (가장 흔히 쓰는 방법)
+python -m unittest discover -s tests -v
+
+# 요구사항 10대 기능 + 보너스만 콕 집어서 실행
+python -m unittest tests.test_features -v
+
+# 파일 하나만 지정해서 실행 (import 경로: tests/test_repository.py → tests.test_repository)
+python -m unittest tests.test_repository -v
+
+# 특정 클래스/메서드 하나만 실행
+python -m unittest tests.test_features.FeatureAcceptanceTestCase.test_05_budget_set_reflected_in_summary_as_usage_and_overrun_warning -v
+
+# 파일을 직접 실행 (테스트 파일 상단의 sys.path 보정 코드 덕분에 이 방식도 동작함)
+python tests/test_repository.py -v
 ```
+
+### VSCode 테스트 탭(비커 아이콘) 활성화하기
+
+새 컴퓨터에서 이 프로젝트를 받아 VSCode 테스트 탭("테스트 실행" + "적용 범위로 테스트
+실행")까지 쓸 수 있게 만드는 전체 과정을 **1단계(환경 구축) → 2단계(VSCode에서
+테스트 실행)** 순서로 정리하면 다음과 같습니다.
+
+> 참고: `uv venv`로 만드는 가상환경(`.venv`)은 프로젝트 폴더 **안에** 있어야 하는데,
+> `git clone`은 대상 폴더가 완전히 비어 있어야만 동작합니다(`.venv`가 먼저 들어있으면
+> `fatal: 대상 경로가 이미 있고 빈 디렉터리가 아닙니다` 로 실패). 그래서 "가상환경
+> 만들기"는 실제로는 **프로젝트를 받은 직후**에 수행합니다. `uv` 설치만 컴퓨터에 한 번
+> 해두면 되는 완전히 독립적인 작업이라 1단계에 그대로 둡니다.
+
+#### 1단계 — 환경 구축 (컴퓨터 하나당 최초 1회)
+
+```bash
+# uv 설치 (파이썬 패키지/가상환경 관리 도구)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+설치 스크립트가 마지막에 PATH 설정 방법을 안내합니다(셸 설정 파일에 한 줄 추가
+하라는 안내가 보통 나옵니다). 안내대로 반영하거나, 간단히 **새 터미널을 하나
+열어서** 아래 명령으로 설치가 됐는지 확인하고 다음 단계로 넘어갑니다.
+
+```bash
+uv --version
+```
+
+#### 2단계 — 프로젝트 받고 VSCode에서 테스트 실행
+
+```bash
+# 1) GitHub 에서 프로젝트 받기
+git clone https://github.com/aha645/AllowanceTracker.git
+cd AllowanceTracker
+
+# 2) 프로젝트 전용 가상환경 생성
+#    (dataclass(slots=True) 등 3.10+ 문법을 쓰므로 3.10 이상 지정)
+uv venv .venv --python 3.10
+
+# 3) 가상환경 활성화 — 이후 이 터미널의 python/pip/uv 는 전부 이 .venv 를 가리킴
+source .venv/bin/activate
+
+# 4) "적용 범위로 테스트 실행" 버튼에 필요한 coverage 설치
+#    (uv 로 만든 venv는 기본적으로 pip 가 없으므로 uv pip install 로 설치.
+#     activate 된 상태라 --python 옵션 없이 바로 이 venv 에 들어간다)
+uv pip install coverage
+
+# 5) 활성화된 이 콘솔에서 VSCode 열기 (현재 폴더를 워크스페이스로 오픈)
+code .
+```
+
+VSCode가 열리면 아래 순서로 테스트 탭을 활성화합니다.
+
+1. **`.vscode/settings.json` 확인** — 아래 내용으로 이 저장소에 포함되어 있어야
+   정상입니다(관리자가 `git push` 해 두었다는 전제. 혹시 클론한 저장소에 이 파일이
+   없다면 아래 내용 그대로 `.vscode/settings.json` 을 새로 만들면 됩니다):
+   ```jsonc
+   {
+       "python.testing.unittestEnabled": true,
+       "python.testing.pytestEnabled": false,
+       "python.testing.unittestArgs": [
+           "-v",
+           "-s", "tests",
+           "-p", "test_*.py"
+       ]
+   }
+   ```
+   | 키 | 의미 |
+   |---|---|
+   | `python.testing.unittestEnabled` | 표준 `unittest` 방식으로 테스트를 찾으라는 뜻 — 이걸 켜야 비커 탭이 켜짐 |
+   | `python.testing.pytestEnabled` | 이 프로젝트는 pytest(외부 패키지)를 쓰지 않으므로 명시적으로 꺼서 혼선 방지 |
+   | `python.testing.unittestArgs` | `-s tests`(탐색 폴더) + `-p test_*.py`(파일 패턴) — `python -m unittest discover -s tests -p test_*.py` 와 동일한 조건 |
+
+2. **인터프리터를 방금 만든 `.venv`(3.10)로 직접 선택** — `Cmd+Shift+P` → **`Python: Select Interpreter`** → `./.venv/bin/python` (또는 `.venv (Python 3.10)`) 선택.
+   VSCode 파이썬 확장이 macOS 시스템 기본 Python(주로 3.9, Command Line Tools 번들)을
+   자동으로 잡는 경우가 있는데, 이 프로젝트는 `budget_app/models.py`의
+   `@dataclass(slots=True)`처럼 **Python 3.10부터** 지원하는 문법을 쓰므로, 3.9가
+   선택된 상태에서는 테스트 탐색 자체가 아래 에러로 실패합니다. 그래서 이 선택을
+   건너뛸 수 없습니다.
+   ```
+   TypeError: dataclass() got an unexpected keyword argument 'slots'
+   ```
+   `.vscode/settings.json`에 `python.defaultInterpreterPath`로 특정 경로를 하드코딩
+   하지 않는 이유는, 그 경로가 사람·컴퓨터마다 다르기 때문입니다 — 대신 매번 이 선택
+   UI로 지정합니다.
+
+3. **좌측 액티비티바의 테스트(비커) 아이콘 클릭** → `tests/` 아래 3개 파일이 트리로
+   나타나면 성공. 각 테스트 옆 ▶(실행) 또는 🐛(디버그) 버튼으로 개별 실행/디버깅이
+   가능하고, 트리 상단의 **"적용 범위로 테스트 실행"** 버튼을 누르면(2)단계에서
+   `coverage`를 이미 설치해 뒀으므로) 파일별 커버리지 비율과 에디터의 줄 번호 옆
+   초록(실행됨)/빨강(테스트가 건드리지 않음) 표시까지 바로 볼 수 있습니다.
+
+**문제가 안 풀릴 때 체크리스트**
+
+| 증상 | 조치 |
+|---|---|
+| 테스트 탭에 아무것도 안 뜸 | 테스트 탭 새로고침(↻) 버튼, 또는 `Cmd+Shift+P` → `Test: Refresh Tests` |
+| 코드를 고쳤는데 옛날 테스트 이름이 그대로 보임 | 위와 동일 + 그래도 안 되면 `Cmd+Shift+P` → `Developer: Reload Window` |
+| `dataclass() got an unexpected keyword argument 'slots'` 에러 | 3.9가 선택된 상태 → `Python: Select Interpreter` 로 `.venv`(3.10) 재선택 |
+| "적용 범위로 테스트 실행" 시 `ModuleNotFoundError: No module named 'coverage'` | 선택된 인터프리터에 `coverage`가 없음 → 그 인터프리터가 가리키는 `.venv`에 `uv pip install coverage` (또는 `uv pip install --python <경로> coverage`) |
+| 원인을 못 찾겠을 때 | 하단 `Output` 패널 → 드롭다운에서 `Python` 또는 `Python Test Log` 선택해서 실제 에러 확인 |
+
+`.venv/`는 `.gitignore`에 포함되어 있어 커밋되지 않습니다.
+
+**VSCode 디버거에서 CLI 자체를 실행하기**: `.vscode/launch.json` 에 `python -m budget_app`
+을 인자와 함께 실행하는 디버그 설정이 준비되어 있습니다. "budget_app: 인자 직접 입력" 설정을
+고르면 F5 를 누를 때마다 입력창이 뜨고, 거기에 `list --limit 5` 처럼 원하는 인자를 쳐서
+`cmd_add`/`cmd_summary` 등에 브레이크포인트를 걸고 디버깅할 수 있습니다.
+(`add` 처럼 `input()` 을 쓰는 대화형 명령은 `console: integratedTerminal` 설정 덕분에
+VSCode 통합 터미널에서 정상적으로 키보드 입력을 받습니다.)
 
 ---
 
@@ -157,17 +292,22 @@ id N 의 슬롯 위치 = (N - 1) * 16                     # 슬롯의 "위치"�
 
 ### 왜 `compact` 가 필요한가
 
-`update` 는 기존 줄을 고치지 않고 새 버전을 끝에 덧붙입니다(append-only). 그래서 수정이 쌓일수록
-`transactions.jsonl` 에 아무도 참조하지 않는 **고아 레코드**가 남고 파일이 계속 커집니다.
-`compact` 는 인덱스가 가리키는 살아있는 레코드만 골라 새 파일로 옮겨 쓴 뒤 통째로 교체합니다.
-슬롯의 개수와 순서는 그대로 두고 offset 값만 고치므로 **id 는 절대 바뀌지 않습니다.**
+`update`는 기존 줄을 고치지 않고 새 버전을 끝에 덧붙이고(append-only), `delete`는
+로그를 아예 건드리지 않은 채 인덱스 슬롯만 0으로 초기화합니다. 그래서 **`update`와
+`delete`가 쌓일수록** `transactions.jsonl`에 아무도 참조하지 않는 **고아 레코드**가
+남고 파일이 계속 커집니다. `compact`는 인덱스가 가리키는 살아있는 레코드만 골라 새
+파일로 옮겨 쓴 뒤 통째로 교체합니다. 슬롯의 개수와 순서는 그대로 두고 offset 값만
+고치므로 **id는 절대 바뀌지 않습니다.**
 
 ```bash
 python -m budget_app compact
 ```
 
-CLI 는 고아 데이터 비율이 50% 를 넘으면 `compact` 를 안내합니다(자동 실행은 하지 않습니다 —
-명령마다 새로 뜨는 1회성 CLI 라 "유휴 시간 자동 정리"가 성립하지 않기 때문입니다).
+CLI는 `update`·`delete` 실행 직후 고아 데이터 비율을 확인해서, 50%를 넘으면 `compact`를
+안내합니다(`cli.py`의 `maybe_hint_compact()`). 자동으로 `compact`를 실행하지는 않습니다 —
+명령마다 새로 뜨는 1회성 CLI라 "유휴 시간 자동 정리"가 성립하지 않기도 하고, 사용자
+모르게 로그 파일 전체를 재작성하는 것보다 시점을 사용자가 직접 고르게 하는 편이
+안전하다고 판단했기 때문입니다.
 
 ### 최신순 조회
 
@@ -249,7 +389,13 @@ budget_app/
 ├── models.py       Transaction·Category·Budget·RecurringRule dataclass, 커스텀 예외
 ├── formatter.py    외부 라이브러리 없는 표 정렬(전각 문자 폭 계산), 금액/막대 포맷
 └── decorators.py   handle_errors / log_call / timeit (functools.wraps 로 메타데이터 보존)
-tests/              unittest 기반 테스트 50개 (저장 엔진 / 서비스 / CLI)
+tests/
+├── test_features.py    기능(인수) 테스트 — 10대 기능 + 보너스, 요구사항 항목별 1:1
+├── test_repository.py  단위테스트 — 저장 엔진(로그 + 이진 인덱스)
+├── test_services.py    단위테스트 — 검증 함수 + 서비스(검색/요약/예산/CSV/반복규칙)
+├── test_formatter.py   단위테스트 — 표 정렬 포맷터
+└── test_cli.py         단위테스트 — CLI 인자 파싱/오류 처리/대화형 입력 + 회귀 시나리오
+                         (unittest 기반, 총 83개)
 ```
 
 계층 책임은 **모델 → 저장소 → 서비스 → CLI** 로 분리되어 있습니다.

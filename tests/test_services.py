@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+# `python tests/test_services.py` 로 직접 실행할 때도 budget_app 을 찾을 수 있도록
+# 프로젝트 루트를 sys.path 에 넣는다 (자세한 이유는 test_repository.py 상단 주석 참고).
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 from budget_app.models import DuplicateError, NotFoundError, Transaction, ValidationError
 from budget_app.repository import TransactionRepository
@@ -25,29 +32,32 @@ from budget_app.stores import BudgetStore, CategoryStore, RecurringStore
 
 
 class ValidationTestCase(unittest.TestCase):
-    def test_validate_date(self) -> None:
+    # 번호는 실행 순서 강제가 아니라 가독성을 위한 정렬이다(각 테스트는 독립적).
+    # 두 자리 0-padding 은 문자열 정렬 시 "10"이 "2"보다 앞에 오는 걸 막기 위함.
+
+    def test_00_validate_date(self) -> None:
         self.assertEqual(validate_date(" 2024-01-05 "), "2024-01-05")
         for bad in ("2024-13-01", "2024-02-30", "24-01-01", "2024/01/01", "2024-1-5", ""):
             with self.subTest(bad=bad), self.assertRaises(ValidationError):
                 validate_date(bad)
 
-    def test_validate_month(self) -> None:
+    def test_01_validate_month(self) -> None:
         self.assertEqual(validate_month("2024-01"), "2024-01")
         with self.assertRaises(ValidationError):
             validate_month("2024-1")
 
-    def test_validate_type(self) -> None:
+    def test_02_validate_type(self) -> None:
         self.assertEqual(validate_type("INCOME"), "income")
         with self.assertRaises(ValidationError):
             validate_type("transfer")
 
-    def test_validate_amount(self) -> None:
+    def test_03_validate_amount(self) -> None:
         self.assertEqual(validate_amount("12,000"), 12000)
         for bad in ("0", "-1", "abc", "1.5"):
             with self.subTest(bad=bad), self.assertRaises(ValidationError):
                 validate_amount(bad)
 
-    def test_tags_roundtrip(self) -> None:
+    def test_04_tags_roundtrip(self) -> None:
         self.assertEqual(parse_tags(" 외식 , 점심 ,, 외식 "), ["외식", "점심"])
         self.assertEqual(format_tags(["외식", "점심"]), "외식,점심")
         self.assertEqual(parse_tags(None), [])
@@ -74,22 +84,27 @@ class ServiceTestCase(unittest.TestCase):
             self.service.build_transaction(date, type_, category, amount, memo, tags)
         )
 
-    def test_blocks_add_without_categories(self) -> None:
+    # 번호는 실행 순서 강제가 아니라 가독성을 위한 정렬이다. setUp() 이 테스트마다
+    # 새 임시 폴더 + 카테고리 3종을 준비해주므로 각 테스트는 서로 완전히 독립적이다.
+    # (카테고리 등록이 안 된 상태에서 add 가 막히는 것을 보고 싶다면 test_00 처럼
+    #  같은 테스트 안에서 별도의 "빈" 서비스를 직접 만들어 검증한다.)
+
+    def test_00_blocks_add_without_categories(self) -> None:
         empty_dir = Path(tempfile.mkdtemp())
         service = TransactionService(TransactionRepository(empty_dir), CategoryStore(empty_dir))
         with self.assertRaises(ValidationError) as ctx:
             service.build_transaction("2024-01-01", "expense", "식비", 1000)
         self.assertIn("카테고리", ctx.exception.message)
 
-    def test_unknown_category_rejected(self) -> None:
+    def test_01_unknown_category_rejected(self) -> None:
         with self.assertRaises(ValidationError):
             self.service.build_transaction("2024-01-01", "expense", "없는것", 1000)
 
-    def test_duplicate_category_rejected(self) -> None:
+    def test_02_duplicate_category_rejected(self) -> None:
         with self.assertRaises(DuplicateError):
             self.categories.add("식비")
 
-    def test_search_combines_conditions_with_and(self) -> None:
+    def test_03_search_combines_conditions_with_and(self) -> None:
         self.add("2024-01-05", "expense", "식비", 12000, "점심 김밥", "외식,점심")
         self.add("2024-01-06", "expense", "교통", 1250, "버스")
         self.add("2024-02-01", "expense", "식비", 30000, "저녁 김밥", "외식")
@@ -107,13 +122,13 @@ class ServiceTestCase(unittest.TestCase):
         result = list(self.service.search(SearchCriteria(date_from="2024-01-06", date_to="2024-02-01")))
         self.assertEqual(len(result), 2)
 
-    def test_search_limit_stops_early(self) -> None:
+    def test_04_search_limit_stops_early(self) -> None:
         for day in range(1, 6):
             self.add(f"2024-01-{day:02d}", "expense", "식비", 1000)
         self.assertEqual(len(list(self.service.search(SearchCriteria(type="expense"), limit=2))), 2)
         self.assertEqual(len(list(self.service.iter_latest(3))), 3)
 
-    def test_update_keeps_unspecified_fields(self) -> None:
+    def test_05_update_keeps_unspecified_fields(self) -> None:
         tx = self.add("2024-01-05", "expense", "식비", 12000, "점심", "외식")
         before, after = self.service.update(tx.id, amount=5000)
         self.assertEqual(after.amount, 5000)
@@ -121,19 +136,19 @@ class ServiceTestCase(unittest.TestCase):
         self.assertEqual(after.date, before.date)
         self.assertEqual(after.tags, ["외식"])
 
-    def test_update_validates_new_values(self) -> None:
+    def test_06_update_validates_new_values(self) -> None:
         tx = self.add("2024-01-05", "expense", "식비", 12000)
         for kwargs in ({"amount": "-1"}, {"date": "2024-99-99"}, {"type_": "x"}, {"category": "없음"}, {}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValidationError):
                 self.service.update(tx.id, **kwargs)
 
-    def test_update_and_delete_missing_id(self) -> None:
+    def test_07_update_and_delete_missing_id(self) -> None:
         with self.assertRaises(NotFoundError):
             self.service.update(99, amount=100)
         with self.assertRaises(NotFoundError):
             self.service.delete(99)
 
-    def test_summary_totals_and_top_n(self) -> None:
+    def test_08_summary_totals_and_top_n(self) -> None:
         self.add("2024-01-05", "expense", "식비", 12000)
         self.add("2024-01-06", "expense", "식비", 8000)
         self.add("2024-01-07", "expense", "교통", 1250)
@@ -147,12 +162,12 @@ class ServiceTestCase(unittest.TestCase):
         self.assertEqual(summary.count, 4)
         self.assertEqual(summary.expense_by_category, [("식비", 20000)])
 
-    def test_summary_empty_month(self) -> None:
+    def test_09_summary_empty_month(self) -> None:
         summary = self.service.summarize_month("2030-01", top=3)
         self.assertTrue(summary.is_empty)
         self.assertEqual(summary.total_expense, 0)
 
-    def test_budget_usage_and_overrun(self) -> None:
+    def test_10_budget_usage_and_overrun(self) -> None:
         self.budget_service.set_budget("2024-01", 10000)
         usage = self.budget_service.usage("2024-01", 5000)
         self.assertEqual(usage.percent, 50.0)
@@ -164,25 +179,25 @@ class ServiceTestCase(unittest.TestCase):
         self.assertEqual(over.remaining, -5000)
         self.assertIsNone(self.budget_service.usage("2030-01", 0))
 
-    def test_budget_overwrite_same_month(self) -> None:
+    def test_11_budget_overwrite_same_month(self) -> None:
         self.budget_service.set_budget("2024-01", 10000)
         budget, previous = self.budget_service.set_budget("2024-01", 20000)
         self.assertEqual(budget.amount, 20000)
         self.assertEqual(previous.amount, 10000)
         self.assertEqual(len(self.budget_service.list_all()), 1)
 
-    def test_budget_rejects_bad_input(self) -> None:
+    def test_12_budget_rejects_bad_input(self) -> None:
         with self.assertRaises(ValidationError):
             self.budget_service.set_budget("2024-1", 1000)
         with self.assertRaises(ValidationError):
             self.budget_service.set_budget("2024-01", -100)
 
-    def test_category_in_use_detection(self) -> None:
+    def test_13_category_in_use_detection(self) -> None:
         self.add("2024-01-05", "expense", "식비", 12000)
         self.assertIsNotNone(self.service.is_category_in_use("식비"))
         self.assertIsNone(self.service.is_category_in_use("교통"))
 
-    def test_csv_import_skips_invalid_rows(self) -> None:
+    def test_14_csv_import_skips_invalid_rows(self) -> None:
         csv_path = self.data_dir / "in.csv"
         csv_path.write_text(
             "date,type,category,amount,memo,tags\n"
@@ -200,7 +215,7 @@ class ServiceTestCase(unittest.TestCase):
         self.assertEqual(tx.memo, "점심, 회사")
         self.assertEqual(tx.tags, ["외식", "점심"])
 
-    def test_csv_roundtrip(self) -> None:
+    def test_15_csv_roundtrip(self) -> None:
         self.add("2024-03-01", "expense", "식비", 8000, "점심, 회사", "외식,점심")
         out = self.data_dir / "out.csv"
         csv_service = CsvService(self.service)
@@ -211,7 +226,7 @@ class ServiceTestCase(unittest.TestCase):
         self.assertEqual(report.imported, 1)
         self.assertEqual(self.repo.get_transaction(2).memo, "점심, 회사")
 
-    def test_csv_import_missing_file_and_header(self) -> None:
+    def test_16_csv_import_missing_file_and_header(self) -> None:
         csv_service = CsvService(self.service)
         with self.assertRaises(ValidationError):
             csv_service.import_csv(self.data_dir / "nope.csv")
@@ -220,7 +235,7 @@ class ServiceTestCase(unittest.TestCase):
         with self.assertRaises(ValidationError):
             csv_service.import_csv(bad)
 
-    def test_recurring_apply_is_idempotent(self) -> None:
+    def test_17_recurring_apply_is_idempotent(self) -> None:
         recurring = RecurringService(RecurringStore(self.data_dir), self.service)
         recurring.add(day=31, type_="income", category="월급", amount=3000000, memo="급여")
         created, skipped = recurring.apply_month("2024-02")

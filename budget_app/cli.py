@@ -409,6 +409,7 @@ def cmd_delete(ctx: AppContext, args: argparse.Namespace) -> int:
     ctx.transactions.delete(tx_id)
     print(f"[삭제 완료] id={tx.display_id} ({tx.date} {tx.category} {format_amount(tx.amount)}원)")
     print("[안내] 삭제된 id 는 재사용되지 않습니다(번호 gap 은 정상입니다).")
+    maybe_hint_compact(ctx)
     return EXIT_OK
 
 

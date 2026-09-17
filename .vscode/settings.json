@@ -1,0 +1,17 @@
+{
+    // 이 파일은 워크스페이스 범위 설정이라 이 프로젝트를 열었을 때만 적용됨.
+    // 다른 프로젝트 폴더에는 영향을 주지 않음.
+
+    // Python 3.10 이상 인터프리터가 필요함(dataclass(slots=True) 등 사용).
+    // 절대경로는 사람·컴퓨터마다 다르므로 하드코딩하지 않는다.
+    // VSCode 파이썬 확장이 잘못된 버전(예: OS 번들 Python 3.9)을 잡는다면
+    // Cmd+Shift+P → "Python: Select Interpreter" 에서 3.10 이상 인터프리터를 직접 선택할 것.
+    "python.testing.unittestEnabled": true,
+    "python.testing.pytestEnabled": false,
+    "python.testing.unittestArgs": [
+        "-v",
+        "-s", "tests",
+        "-p", "test_*.py"
+    ],
+    "python-envs.defaultEnvManager": "ms-python.python:venv"
+}

@@ -4,15 +4,66 @@
     // 자세한 내용을 보려면 https://go.microsoft.com/fwlink/?linkid=830387을(를) 방문하세요.
     "version": "0.2.0",
     "configurations": [
-
         {
-            "name": "Python 디버거: 모듈(인자포함)",
+            // F5 로 실행할 때마다 상단에 입력창이 뜸.
+            // 예) list --limit 5
+            // 예) add --date 2024-01-05 --type expense --category "식비" --amount 12000 --memo "점심"
+            "name": "budget_app: 인자 직접 입력",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "budget_app",
+            "args": "${input:cliArgs}",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            // 매번 입력하기 귀찮은 자주 쓰는 케이스는 별도 설정으로 고정해두면 더 빠름
+            "name": "budget_app: list",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "budget_app",
+            "args": ["list", "--limit", "20"],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "budget_app: add (옵션 기반)",
             "type": "debugpy",
             "request": "launch",
             "module": "budget_app",
             "args": [
-                "--"
-            ]
+                "add",
+                "--date", "2024-01-05",
+                "--type", "expense",
+                "--category", "식비",
+                "--amount", "12000",
+                "--memo", "점심",
+                "--tags", "외식,점심"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            // 대화형 add 는 input() 으로 값을 받으므로 반드시 integratedTerminal 이어야 함
+            "name": "budget_app: add (대화형)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "budget_app",
+            "args": ["add"],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ],
+    "inputs": [
+        {
+            "id": "cliArgs",
+            "type": "promptString",
+            "description": "budget_app 뒤에 붙일 인자 (예: list --limit 5)",
+            "default": "list"
         }
     ]
 }

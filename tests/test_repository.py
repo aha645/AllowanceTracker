@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 import struct
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+# `python tests/test_repository.py` 로 직접 실행하면 sys.path[0] 이 tests/ 가 되어
+# budget_app 을 찾지 못한다. `python -m unittest tests.test_repository` 로 실행할 때는
+# 이미 프로젝트 루트가 sys.path 에 있으므로 중복 삽입만 막아주면 된다.
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 from budget_app.models import NotFoundError, Transaction
 from budget_app.repository import SLOT_SIZE, TransactionRepository
@@ -25,23 +33,34 @@ class RepositoryTestCase(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def test_files_created_on_first_run(self) -> None:
+    # 아래 번호는 실행 순서를 강제하기 위한 것이 아니라(각 테스트는 setUp 에서 매번
+    # 새 임시 폴더를 받으므로 서로 독립적이다), 기능이 쌓이는 순서대로 읽기 쉽게
+    # 정렬해 둔 것이다. 두 자리로 0-padding 한 이유는 unittest 가 메서드 이름을
+    # 문자열로 정렬해서 실행하기 때문 — 패딩이 없으면 "10"이 "2"보다 앞에 온다.
+
+    def test_00_files_created_on_first_run(self) -> None:
         self.assertTrue(self.repo.log_path.exists())
         self.assertTrue(self.repo.idx_path.exists())
         self.assertEqual(self.repo.index.slot_count(), 0)
         self.assertEqual(self.repo.index.next_id(), 1)
 
-    def test_ids_start_at_one_and_increase(self) -> None:
+    def test_01_ids_start_at_one_and_increase(self) -> None:
         ids = [self.repo.append_transaction(make_tx(d)).id for d in range(1, 4)]
         self.assertEqual(ids, [1, 2, 3])
         self.assertEqual(self.repo.idx_path.stat().st_size, 3 * SLOT_SIZE)
 
-    def test_iter_latest_is_newest_first(self) -> None:
+    def test_02_tx1_at_offset_zero_is_not_confused_with_deleted(self) -> None:
+        """TX-1 은 offset 0 에서 시작하지만 (0, 0) sentinel 과 구분되어야 한다."""
+        self.repo.append_transaction(make_tx(1))
+        self.assertEqual(self.repo.index.read_slot(1)[0], 0)
+        self.assertIsNotNone(self.repo.read_transaction(1))
+
+    def test_03_iter_latest_is_newest_first(self) -> None:
         for day in range(1, 4):
             self.repo.append_transaction(make_tx(day))
         self.assertEqual([tx.id for tx in self.repo.iter_latest_transactions()], [3, 2, 1])
 
-    def test_update_appends_and_rewrites_slot(self) -> None:
+    def test_04_update_appends_and_rewrites_slot(self) -> None:
         tx = self.repo.append_transaction(make_tx(1))
         size_before = self.repo.log_path.stat().st_size
         self.repo.update_transaction(tx.replace_fields(amount=7777))
@@ -50,11 +69,11 @@ class RepositoryTestCase(unittest.TestCase):
         self.assertEqual(self.repo.idx_path.stat().st_size, SLOT_SIZE)  # 슬롯 수는 그대로
         self.assertEqual(self.repo.get_transaction(1).amount, 7777)
 
-    def test_update_missing_id_raises(self) -> None:
+    def test_05_update_missing_id_raises(self) -> None:
         with self.assertRaises(NotFoundError):
             self.repo.update_transaction(make_tx(1).replace_fields(id=42))
 
-    def test_delete_zeroes_slot_and_keeps_log(self) -> None:
+    def test_06_delete_zeroes_slot_and_keeps_log(self) -> None:
         self.repo.append_transaction(make_tx(1))
         self.repo.append_transaction(make_tx(2))
         log_size = self.repo.log_path.stat().st_size
@@ -67,26 +86,20 @@ class RepositoryTestCase(unittest.TestCase):
         self.assertIsNone(self.repo.read_transaction(1))
         self.assertEqual([tx.id for tx in self.repo.iter_latest_transactions()], [2])
 
-    def test_delete_twice_raises(self) -> None:
+    def test_07_delete_twice_raises(self) -> None:
         self.repo.append_transaction(make_tx(1))
         self.repo.delete_transaction(1)
         with self.assertRaises(NotFoundError):
             self.repo.delete_transaction(1)
 
-    def test_ids_are_never_reused_after_delete(self) -> None:
+    def test_08_ids_are_never_reused_after_delete(self) -> None:
         for day in range(1, 4):
             self.repo.append_transaction(make_tx(day))
         self.repo.delete_transaction(2)
         self.assertEqual(self.repo.append_transaction(make_tx(4)).id, 4)
         self.assertEqual([tx.id for tx in self.repo.iter_latest_transactions()], [4, 3, 1])
 
-    def test_tx1_at_offset_zero_is_not_confused_with_deleted(self) -> None:
-        """TX-1 은 offset 0 에서 시작하지만 (0, 0) sentinel 과 구분되어야 한다."""
-        self.repo.append_transaction(make_tx(1))
-        self.assertEqual(self.repo.index.read_slot(1)[0], 0)
-        self.assertIsNotNone(self.repo.read_transaction(1))
-
-    def test_compact_keeps_ids_and_data(self) -> None:
+    def test_09_compact_keeps_ids_and_data(self) -> None:
         for day in range(1, 6):
             self.repo.append_transaction(make_tx(day, amount=day * 100))
         self.repo.update_transaction(self.repo.get_transaction(2).replace_fields(amount=9999))
@@ -104,11 +117,11 @@ class RepositoryTestCase(unittest.TestCase):
         # compact 이후에도 새 id 는 이어서 발급된다
         self.assertEqual(self.repo.append_transaction(make_tx(6)).id, 6)
 
-    def test_compact_on_empty_repo(self) -> None:
+    def test_10_compact_on_empty_repo(self) -> None:
         self.repo.compact()
         self.assertEqual(self.repo.stats().live_count, 0)
 
-    def test_unicode_roundtrip(self) -> None:
+    def test_11_unicode_roundtrip(self) -> None:
         tx = self.repo.append_transaction(
             Transaction(0, "2024-01-01", "expense", "식비", 1000, memo="김밥 🍙, 콤마", tags=["외식", "점심"])
         )
