@@ -24,6 +24,17 @@
 각 번호는 실행 순서를 강제하지 않는다(테스트별로 독립된 임시 --data-dir 사용).
 숫자 접두어는 오직 "요구사항 문서의 어느 항목을 검증하는 테스트인지"를 한눈에
 찾기 위한 인덱스다.
+
+## 실제 콘솔처럼 화면 보기
+
+그냥 실행하면 된다(별도 스위치 없음). 각 테스트가 호출하는 `python -m budget_app
+...` 명령, 대화형으로 "입력한" 값, 실제 화면 출력, 종료 코드를 실제 터미널 세션
+그대로 콘솔에 보여준다(어서션에 쓰는 반환값 자체는 평소처럼 캡처된 문자열이라
+통과/실패 판정에는 아무 영향이 없다):
+
+```bash
+python -m unittest tests.test_requirement_checklist -v
+```
 """
 
 from __future__ import annotations
@@ -33,9 +44,10 @@ import re
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
+from typing import Iterable, TextIO
 from unittest import mock
 
 # `python tests/test_requirement_checklist.py` 로 직접 실행할 때도 budget_app 을
@@ -48,20 +60,70 @@ from budget_app import cli
 from budget_app.cli import main
 
 
+class _TeeIO(io.StringIO):
+    """StringIO 로 캡처하면서, 같은 내용을 실시간으로 콘솔에도 그대로 써서
+    보여준다. main() 실행 중 발생하는 모든 print 를 프로그램이 실제로 쓰는 순서
+    그대로(대화형 입력 에코와도 뒤섞이지 않고 진짜 순서대로) 화면에 비출 수
+    있는 건 이 실시간 전달 덕분이다."""
+
+    def __init__(self, mirror: TextIO) -> None:
+        super().__init__()
+        self._mirror = mirror
+
+    def write(self, s: str) -> int:
+        self._mirror.write(s)
+        return super().write(s)
+
+
 class RequirementChecklistTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.data_dir = Path(self._tmp.name) / "data"
+        sys.stdout.write(f"\n{'=' * 72}\n[{self._testMethodName}]\n{'=' * 72}\n")
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
     def run_cli(self, *argv: str) -> tuple[int, str, str]:
-        """CLI 를 실행하고 (종료 코드, stdout, stderr) 를 돌려준다."""
-        out, err = io.StringIO(), io.StringIO()
+        """CLI 를 실행하고 (종료 코드, stdout, stderr) 를 돌려준다.
+
+        실행한 명령/화면 출력/종료 코드를 실제 터미널처럼 그대로 콘솔에 보여준다.
+        """
+        console = sys.stdout
+        console.write(f"\n$ python -m budget_app {' '.join(argv)}\n")
+        out, err = _TeeIO(console), _TeeIO(console)
         with redirect_stdout(out), redirect_stderr(err):
             code = main(["--data-dir", str(self.data_dir), *argv])
+        console.write(f"[종료 코드: {code}]\n")
         return code, out.getvalue(), err.getvalue()
+
+    @contextmanager
+    def fake_input(self, answers: Iterable[str]):
+        """대화형 input() 을 모의 실행한다. 실제 터미널처럼 프롬프트 문구 뒤에
+        사용자가 "입력한" 값을 그 자리에서 바로 이어 붙여 보여준다
+        (예: `날짜 (YYYY-MM-DD, 엔터=2024-01-01): 2024-01-07`)."""
+        console = sys.stdout
+        it = iter(answers)
+
+        def _input(prompt: str = "") -> str:
+            value = next(it)
+            console.write(f"{prompt}{value}\n")
+            return value
+
+        with mock.patch("builtins.input", _input):
+            yield
+
+    @contextmanager
+    def fake_interrupt(self):
+        """대화형 입력 도중 사용자가 Ctrl+C 를 누른 상황을 모의 실행한다."""
+        console = sys.stdout
+
+        def _input(prompt: str = "") -> str:
+            console.write(f"{prompt}^C\n")
+            raise KeyboardInterrupt
+
+        with mock.patch("builtins.input", _input):
+            yield
 
     # ==================================================================
     # 000: 카테고리 미등록 상태에서 add 시도 → 반드시 오류 + 힌트
@@ -88,36 +150,47 @@ class RequirementChecklistTestCase(unittest.TestCase):
     # ==================================================================
     # 001~003: category add / list / remove
     # ==================================================================
-    # 기능: category add — 등록 성공 메시지 출력 및 중복 이름 등록 차단
-    def test_001_category_add(self) -> None:
-        code, out, _ = self.run_cli("category", "add", "--name", "식비")
-        self.assertEqual(code, 0)
-        self.assertIn("[저장 완료]", out)
-        self.assertIn("식비", out)
+    def _seed_categories(self, *names: str) -> None:
+        """category add 커맨드로 카테고리를 미리 등록해 둔다. add 기능 자체를
+        검증하는 게 아니라 list/remove 등 다른 커맨드를 테스트하기 위한 사전
+        준비(arrange) 단계라서, add 의 성공 여부는 별도로 단언하지 않는다."""
+        for name in names:
+            self.run_cli("category", "add", "--name", name)
 
-        # 중복 등록은 막혀야 한다
+    # 기능: category add — 여러 카테고리를 등록할 때마다 성공 메시지/이름이
+    # 출력되고, 마지막에 이미 등록된 이름을 다시 추가하면 차단되는지 검증
+    def test_001_category_add(self) -> None:
+        for name in ("식비", "교통", "월급"):
+            code, out, _ = self.run_cli("category", "add", "--name", name)
+            self.assertEqual(code, 0)
+            self.assertIn("[저장 완료]", out)
+            self.assertIn(name, out)
+
+        # 마지막에 이미 등록된 이름(식비)을 다시 추가 → 중복 등록은 막혀야 한다
         code, _, err = self.run_cli("category", "add", "--name", "식비")
         self.assertEqual(code, 1)
         self.assertIn("이미 등록", err)
 
-    # 기능: category list — 빈 목록 안내 및 등록된 카테고리 전체 목록/개수 출력
+    # 기능: category list — 등록된 카테고리가 무엇인지 보여주는 동작만
+    # 검증(카테고리 등록 자체는 _seed_categories 로 미리 준비): 빈 목록 안내와
+    # 등록된 카테고리 전체 목록/개수 출력을 확인
     def test_002_category_list(self) -> None:
         code, out, _ = self.run_cli("category", "list")
         self.assertEqual(code, 0)
         self.assertIn("등록된 카테고리가 없습니다", out)
 
-        self.run_cli("category", "add", "--name", "식비")
-        self.run_cli("category", "add", "--name", "교통")
+        self._seed_categories("식비", "교통", "월급")
         code, out, _ = self.run_cli("category", "list")
         self.assertEqual(code, 0)
         self.assertIn("식비", out)
         self.assertIn("교통", out)
-        self.assertIn("2개", out)
+        self.assertIn("월급", out)
+        self.assertIn("3개", out)
 
     # 기능: category remove — 사용 중인 카테고리 삭제 차단, 미사용 카테고리
     # 정상 삭제, 존재하지 않는 카테고리 삭제 시도 시 오류
     def test_003_category_remove(self) -> None:
-        self.run_cli("category", "add", "--name", "식비")
+        self._seed_categories("식비")
         self.run_cli("add", "--date", "2024-01-01", "--type", "expense", "--category", "식비", "--amount", "1000")
 
         # 사용 중인 카테고리는 삭제 차단
@@ -126,7 +199,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertIn("사용 중", err)
 
         # 사용하지 않는 카테고리는 정상 삭제
-        self.run_cli("category", "add", "--name", "미사용")
+        self._seed_categories("미사용")
         code, out, _ = self.run_cli("category", "remove", "--name", "미사용")
         self.assertEqual(code, 0)
         self.assertIn("[삭제 완료]", out)
@@ -160,8 +233,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
     # 순차 입력받아 저장하는지 검증
     def test_011_add_interactive_mode_all_fields(self) -> None:
         self.run_cli("category", "add", "--name", "식비")
-        answers = iter(["2024-01-07", "expense", "1", "5500", "커피", "카페,간식"])
-        with mock.patch("builtins.input", lambda *a: next(answers)):
+        with self.fake_input(["2024-01-07", "expense", "1", "5500", "커피", "카페,간식"]):
             code, out, _ = self.run_cli("add")
         self.assertEqual(code, 0)
         self.assertIn("[저장 완료] id=TX-1", out)
@@ -174,8 +246,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
     def test_012_add_interactive_mode_uses_defaults_on_blank_input(self) -> None:
         """날짜/타입을 엔터만 치면 오늘 날짜/expense 기본값이 적용돼야 한다."""
         self.run_cli("category", "add", "--name", "식비")
-        answers = iter(["", "", "1", "3000", "", ""])
-        with mock.patch("builtins.input", lambda *a: next(answers)):
+        with self.fake_input(["", "", "1", "3000", "", ""]):
             code, out, _ = self.run_cli("add")
         self.assertEqual(code, 0)
         today = datetime.now().strftime("%Y-%m-%d")
@@ -369,7 +440,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
     def test_043_delete_confirmation_prompt_cancel_keeps_transaction(self) -> None:
         self.run_cli("category", "add", "--name", "식비")
         self.run_cli("add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "1000")
-        with mock.patch("sys.stdin.isatty", return_value=True), mock.patch("builtins.input", return_value="n"):
+        with mock.patch("sys.stdin.isatty", return_value=True), self.fake_input(["n"]):
             code, out, _ = self.run_cli("delete", "--id", "TX-1")
         self.assertEqual(code, 0)
         self.assertIn("취소", out)
@@ -797,7 +868,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
     # 종료 코드 130 과 "[중단]" 메시지를 반환하는지 검증
     def test_113_interactive_cancel_returns_130(self) -> None:
         self.run_cli("category", "add", "--name", "식비")
-        with mock.patch("builtins.input", side_effect=KeyboardInterrupt):
+        with self.fake_interrupt():
             code, _, err = self.run_cli("add")
         self.assertEqual(code, 130)
         self.assertIn("[중단]", err)
