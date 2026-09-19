@@ -26,30 +26,32 @@ python -m budget_app --verbose list      # 실행 로그/시간 측정 출력(�
 
 ### 테스트 실행
 
-외부 라이브러리 없이 표준 `unittest`로 작성되어 있고(총 83개), **두 계층**으로 나뉩니다.
+외부 라이브러리 없이 표준 `unittest`로 작성되어 있고(총 143개), **두 계층**으로 나뉩니다.
 
 | 계층 | 파일 | 무엇을 검증하는가 | 호출 방식 |
 |---|---|---|---|
-| **기능(인수) 테스트** | `tests/test_features.py` | `doc/request.md` 1번 섹션의 **10대 기능 + 보너스**가 요구사항 문서 순서 그대로, 항목별로 하나씩 실제 동작하는가 (`test_01_add_...` ~ `test_12_compact_...`) | CLI를 블랙박스로 호출(`main(argv)`), 출력 문자열만으로 판단 |
-| **내부 단위테스트** | `tests/test_repository.py`<br>`tests/test_services.py`<br>`tests/test_formatter.py`<br>`tests/test_cli.py` | 그 기능을 구현하는 각 계층(저장 엔진 / 검증·서비스 로직 / 표 포맷터 / CLI 인자·오류 처리)이 내부적으로 올바른가 | 해당 계층의 파이썬 API를 직접 호출 |
+| **기능(인수) 테스트** | `tests/test_requirement_checklist.py` | `doc/request.md` 1번 섹션의 **10대 기능 + 보너스 6종**이 요구사항 문서 순서 그대로, 항목별로 하나씩 실제 동작하는가 (`test_000_...` ~ `test_153_...`, 요구사항 번호 체계 그대로 매핑) | CLI를 블랙박스로 호출(`main(argv)`), 출력 문자열만으로 판단 |
+| **내부 단위테스트 / CLI 엣지케이스** | `tests/test_repository.py`<br>`tests/test_services.py`<br>`tests/test_formatter.py`<br>`tests/test_cli.py` | 그 기능을 구현하는 각 계층(저장 엔진 / 검증·서비스 로직 / 표 포맷터 / CLI 인자·오류 처리)이 내부적으로 올바른가, 그리고 기능 테스트에는 없는 배관 성격 엣지케이스(도움말, 잘못된 id 형식, 대화형 재입력 루프, compact 등) | 해당 계층의 파이썬 API를 직접 호출(단, `test_cli.py`는 CLI를 블랙박스로 호출) |
 
-즉 "요구사항 하나하나가 검증되는가?"는 `test_features.py`의 메서드 이름을 보면 바로
-답이 나오고, "왜 되는가(내부 구현이 맞는가)?"는 나머지 4개 파일이 계층별로 답합니다.
-`test_cli.py`의 `test_08_full_workflow`처럼 여러 기능을 하나로 엮은 엔드투엔드 회귀
-시나리오도 별도로 유지합니다.
+즉 "요구사항 하나하나가 검증되는가?"는 `test_requirement_checklist.py`의 메서드 이름을
+보면 바로 답이 나오고, "왜 되는가(내부 구현이 맞는가)?"는 나머지 4개 파일이 계층별로
+답합니다. `test_cli.py`의 `test_05_full_workflow`처럼 여러 기능을 하나로 엮은
+엔드투엔드 회귀 시나리오도 별도로 유지합니다. 기능 테스트와 항목이 겹치는 단순
+검증은 `test_cli.py`에서 제거했습니다(예: 카테고리 미등록 add 차단, 없는 id delete
+등은 `test_requirement_checklist.py`에만 있습니다).
 
 ```bash
 # 전체 테스트 자동 탐색 실행 (가장 흔히 쓰는 방법)
 python -m unittest discover -s tests -v
 
 # 요구사항 10대 기능 + 보너스만 콕 집어서 실행
-python -m unittest tests.test_features -v
+python -m unittest tests.test_requirement_checklist -v
 
 # 파일 하나만 지정해서 실행 (import 경로: tests/test_repository.py → tests.test_repository)
 python -m unittest tests.test_repository -v
 
 # 특정 클래스/메서드 하나만 실행
-python -m unittest tests.test_features.FeatureAcceptanceTestCase.test_05_budget_set_reflected_in_summary_as_usage_and_overrun_warning -v
+python -m unittest tests.test_requirement_checklist.RequirementChecklistTestCase.test_066_budget_usage_overrun_warning -v
 
 # 파일을 직접 실행 (테스트 파일 상단의 sys.path 보정 코드 덕분에 이 방식도 동작함)
 python tests/test_repository.py -v
@@ -390,11 +392,11 @@ budget_app/
 ├── formatter.py    외부 라이브러리 없는 표 정렬(전각 문자 폭 계산), 금액/막대 포맷
 └── decorators.py   handle_errors / log_call / timeit (functools.wraps 로 메타데이터 보존)
 tests/
-├── test_features.py    기능(인수) 테스트 — 10대 기능 + 보너스, 요구사항 항목별 1:1
-├── test_repository.py  단위테스트 — 저장 엔진(로그 + 이진 인덱스)
-├── test_services.py    단위테스트 — 검증 함수 + 서비스(검색/요약/예산/CSV/반복규칙)
-├── test_formatter.py   단위테스트 — 표 정렬 포맷터
-└── test_cli.py         단위테스트 — CLI 인자 파싱/오류 처리/대화형 입력 + 회귀 시나리오
+├── test_requirement_checklist.py  기능(인수) 테스트 — 10대 기능 + 보너스 6종, 요구사항 번호 체계 1:1 매핑
+├── test_repository.py             단위테스트 — 저장 엔진(로그 + 이진 인덱스)
+├── test_services.py               단위테스트 — 검증 함수 + 서비스(검색/요약/예산/CSV/반복규칙)
+├── test_formatter.py              단위테스트 — 표 정렬 포맷터
+└── test_cli.py                    단위테스트 — CLI 인자 파싱/오류 처리/대화형 입력 + 회귀 시나리오(기능 테스트와 겹치지 않는 엣지케이스만)
                          (unittest 기반, 총 83개)
 ```
 
