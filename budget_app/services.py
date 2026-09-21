@@ -11,7 +11,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Iterator, Sequence
+from typing import Iterable, Iterator
 
 from .models import (
     DATE_FORMAT,
@@ -124,7 +124,7 @@ def parse_tags(value: str | None) -> list[str]:
     return tags
 
 
-def format_tags(tags: Sequence[str]) -> str:
+def format_tags(tags: list[str]) -> str:
     """태그 리스트를 CSV/화면용 쉼표 구분 문자열로 바꾼다."""
     return ",".join(tags)
 
@@ -204,7 +204,7 @@ class TransactionService:
         category: str,
         amount: str | int,
         memo: str = "",
-        tags: str | Sequence[str] | None = None,
+        tags: str | list[str] | None = None,
     ) -> Transaction:
         """원시 입력값을 검증해 (id 미부여) Transaction 으로 만든다."""
         self.ensure_categories_exist()

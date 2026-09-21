@@ -70,13 +70,13 @@ class PadTestCase(unittest.TestCase):
 class FormatTableTestCase(unittest.TestCase):
     # 기능: format_table — 행이 하나도 없으면 빈 문자열을 반환하는지 검증
     def test_00_empty_rows_returns_empty_string(self) -> None:
-        self.assertEqual(format_table(("a", "b"), []), "")
+        self.assertEqual(format_table(["a", "b"], []), "")
 
     # 기능: format_table — 한글이 섞인 셀을 포함해 각 컬럼이 가장 넓은 셀
     # 기준으로 정렬되고, 헤더+구분선+데이터 줄 수가 맞는지 검증
     def test_01_columns_align_to_widest_cell_including_korean(self) -> None:
-        rows = [("TX-1", "식비", "12,000"), ("TX-20", "교통비", "1,250")]
-        table = format_table(("id", "카테고리", "금액"), rows, ("left", "left", "right"))
+        rows = [["TX-1", "식비", "12,000"], ["TX-20", "교통비", "1,250"]]
+        table = format_table(["id", "카테고리", "금액"], rows, ["left", "left", "right"])
         lines = table.split("\n")
         self.assertEqual(len(lines), 4)  # 헤더 1 + 구분선 1 + 데이터 2
 
@@ -87,8 +87,8 @@ class FormatTableTestCase(unittest.TestCase):
     # 기능: format_table — right 정렬 컬럼의 숫자들이 오른쪽 끝에 맞춰
     # 정렬되는지 검증
     def test_02_right_align_puts_numbers_flush_right(self) -> None:
-        rows = [("1", "100"), ("2", "12,000")]
-        table = format_table(("순번", "금액"), rows, ("left", "right"))
+        rows = [["1", "100"], ["2", "12,000"]]
+        table = format_table(["순번", "금액"], rows, ["left", "right"])
         lines = table.split("\n")
         # "금액" 컬럼 폭은 가장 넓은 "12,000"(6) 기준 → "100" 앞에 공백 3칸이 와야 함
         self.assertTrue(lines[2].endswith("   100"))
@@ -97,7 +97,7 @@ class FormatTableTestCase(unittest.TestCase):
     # 기능: format_table — aligns 인자를 생략하면 기본값(left 정렬)으로
     # 동작하는지 검증
     def test_03_default_align_is_left_when_aligns_omitted(self) -> None:
-        table = format_table(("a",), [("x",)])
+        table = format_table(["a"], [["x"]])
         self.assertIn("a", table)
         self.assertIn("x", table)
 

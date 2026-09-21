@@ -6,9 +6,9 @@
 from __future__ import annotations
 
 import unicodedata
-from typing import Iterable, Sequence
+from typing import Iterable
 
-Row = Sequence[str]
+Row = list[str]
 
 
 def display_width(text: str) -> int:
@@ -33,9 +33,9 @@ def pad(text: str, width: int, align: str = "left") -> str:
 
 
 def format_table(
-    headers: Sequence[str],
+    headers: list[str],
     rows: Iterable[Row],
-    aligns: Sequence[str] | None = None,
+    aligns: list[str] | None = None,
 ) -> str:
     """헤더와 행들을 정렬된 표 문자열로 만든다. 행이 없으면 빈 문자열."""
     body = [list(map(str, row)) for row in rows]

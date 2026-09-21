@@ -11,7 +11,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Sequence
+from typing import Callable, Iterable, Iterator
 
 from . import __version__
 from .decorators import EXIT_ERROR, EXIT_OK, command, configure_logging
@@ -45,8 +45,8 @@ DEFAULT_DATA_DIR = Path("./data")
 DEFAULT_LIST_LIMIT = 20
 DEFAULT_TOP = 3
 
-LIST_HEADERS = ("#", "id", "날짜", "타입", "카테고리", "금액", "메모", "태그")
-LIST_ALIGNS = ("right", "left", "left", "left", "left", "right", "left", "left")
+LIST_HEADERS = ["#", "id", "날짜", "타입", "카테고리", "금액", "메모", "태그"]
+LIST_ALIGNS = ["right", "left", "left", "left", "left", "right", "left", "left"]
 
 
 # --------------------------------------------------------------------- 컨텍스트
@@ -150,13 +150,13 @@ def prompt_until_valid(
 
 def render_transactions(rows: Iterable[Transaction]) -> int:
     """거래 목록을 표로 출력하고 출력 건수를 돌려준다(스트리밍 유지)."""
-    table_rows: list[tuple[str, ...]] = []
+    table_rows: list[list[str]] = []
     count = 0
     for tx in rows:
         count += 1
         sign = "+" if tx.type == TYPE_INCOME else "-"
         table_rows.append(
-            (
+            [
                 str(count),  # 화면용 순번 (내부 id 와 무관)
                 tx.display_id,
                 tx.date,
@@ -165,7 +165,7 @@ def render_transactions(rows: Iterable[Transaction]) -> int:
                 f"{sign}{format_amount(tx.amount)}",
                 tx.memo,
                 format_tags(tx.tags),
-            )
+            ]
         )
     if not table_rows:
         return 0
@@ -345,11 +345,11 @@ def cmd_summary(ctx: AppContext, args: argparse.Namespace) -> int:
     if summary.expense_by_category:
         print(f"\n[카테고리별 지출 TOP {top}]")
         rows = [
-            (str(rank), name, f"{format_amount(amount)}원",
-             f"{amount / summary.total_expense * 100:.1f}%")
+            [str(rank), name, f"{format_amount(amount)}원",
+             f"{amount / summary.total_expense * 100:.1f}%"]
             for rank, (name, amount) in enumerate(summary.expense_by_category, start=1)
         ]
-        print(format_table(("순위", "카테고리", "지출", "비중"), rows, ("right", "left", "right", "right")))
+        print(format_table(["순위", "카테고리", "지출", "비중"], rows, ["right", "left", "right", "right"]))
     else:
         print("\n[카테고리별 지출] 지출 내역 없음")
 
@@ -383,12 +383,12 @@ def cmd_update(ctx: AppContext, args: argparse.Namespace) -> int:
     )
     print(f"[수정 완료] id={after.display_id}")
     changes = [
-        (field, str(getattr(before, field)), str(getattr(after, field)))
+        [field, str(getattr(before, field)), str(getattr(after, field))]
         for field in ("date", "type", "category", "amount", "memo", "tags")
         if getattr(before, field) != getattr(after, field)
     ]
     if changes:
-        print(format_table(("필드", "이전", "이후"), changes, ("left", "left", "left")))
+        print(format_table(["필드", "이전", "이후"], changes, ["left", "left", "left"]))
     else:
         print("[안내] 값이 기존과 동일하여 변경된 필드가 없습니다.")
     maybe_hint_compact(ctx)
@@ -431,8 +431,8 @@ def cmd_category(ctx: AppContext, args: argparse.Namespace) -> int:
             print("[안내] 등록된 카테고리가 없습니다.")
             print('[힌트] category add --name "식비" 로 먼저 등록하세요.')
             return EXIT_OK
-        rows = [(str(i), c.name, c.created_at or "-") for i, c in enumerate(categories, start=1)]
-        print(format_table(("#", "카테고리", "등록일시"), rows, ("right", "left", "left")))
+        rows = [[str(i), c.name, c.created_at or "-"] for i, c in enumerate(categories, start=1)]
+        print(format_table(["#", "카테고리", "등록일시"], rows, ["right", "left", "left"]))
         print(f"\n[완료] {len(categories)}개")
         return EXIT_OK
 
@@ -477,18 +477,18 @@ def cmd_budget(ctx: AppContext, args: argparse.Namespace) -> int:
             usage = ctx.budget_service.usage(budget.month, summary.total_expense)
             assert usage is not None
             rows.append(
-                (
+                [
                     budget.month,
                     f"{format_amount(budget.amount)}원",
                     f"{format_amount(usage.spent)}원",
                     f"{usage.percent:.1f}%",
                     "초과" if usage.is_over else "",
-                )
+                ]
             )
         print(format_table(
-            ("월", "예산", "사용", "사용률", "상태"),
+            ["월", "예산", "사용", "사용률", "상태"],
             rows,
-            ("left", "right", "right", "right", "left"),
+            ["left", "right", "right", "right", "left"],
         ))
         print(f"\n[완료] {len(budgets)}개")
         return EXIT_OK
@@ -524,8 +524,8 @@ def cmd_import(ctx: AppContext, args: argparse.Namespace) -> int:
     print(f"[완료] {args.source} → imported={report.imported}, skipped={report.skipped}")
     if report.errors:
         print("\n[건너뛴 행]")
-        rows = [(str(lineno), message) for lineno, message in report.errors[:20]]
-        print(format_table(("행", "사유"), rows, ("right", "left")))
+        rows = [[str(lineno), message] for lineno, message in report.errors[:20]]
+        print(format_table(["행", "사유"], rows, ["right", "left"]))
         if len(report.errors) > 20:
             print(f"... 외 {len(report.errors) - 20}건")
     return EXIT_OK
@@ -562,13 +562,13 @@ def cmd_compact(ctx: AppContext, args: argparse.Namespace) -> int:
     print("[완료] compact")
     print(
         format_table(
-            ("항목", "이전", "이후"),
+            ["항목", "이전", "이후"],
             [
-                ("로그 크기", f"{format_amount(before.log_size)}B", f"{format_amount(after.log_size)}B"),
-                ("살아있는 거래", f"{before.live_count}건", f"{after.live_count}건"),
-                ("슬롯 수(=최대 id)", f"{before.slot_count}", f"{after.slot_count}"),
+                ["로그 크기", f"{format_amount(before.log_size)}B", f"{format_amount(after.log_size)}B"],
+                ["살아있는 거래", f"{before.live_count}건", f"{after.live_count}건"],
+                ["슬롯 수(=최대 id)", f"{before.slot_count}", f"{after.slot_count}"],
             ],
-            ("left", "right", "right"),
+            ["left", "right", "right"],
         )
     )
     print(f"\n[안내] {format_amount(max(saved, 0))}B 를 회수했습니다. id 는 변하지 않습니다.")
@@ -608,7 +608,7 @@ def cmd_recurring(ctx: AppContext, args: argparse.Namespace) -> int:
             print("[힌트] recurring add --day 25 --type income --category 용돈 --amount 300000")
             return EXIT_OK
         rows = [
-            (
+            [
                 rule.display_id,
                 f"매월 {rule.day}일",
                 rule.type,
@@ -617,13 +617,13 @@ def cmd_recurring(ctx: AppContext, args: argparse.Namespace) -> int:
                 rule.memo,
                 format_tags(rule.tags),
                 str(len(rule.applied_months)),
-            )
+            ]
             for rule in rules
         ]
         print(format_table(
-            ("id", "주기", "타입", "카테고리", "금액", "메모", "태그", "적용월수"),
+            ["id", "주기", "타입", "카테고리", "금액", "메모", "태그", "적용월수"],
             rows,
-            ("left", "left", "left", "left", "right", "left", "left", "right"),
+            ["left", "left", "left", "left", "right", "left", "left", "right"],
         ))
         print(f"\n[완료] {len(rules)}개")
         return EXIT_OK
@@ -795,7 +795,7 @@ SUBCOMMAND_REQUIRED = {
 }
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     """CLI 진입점. 종료 코드를 돌려준다(0=성공, 1=오류)."""
     parser = build_parser()
     args = parser.parse_args(argv)
