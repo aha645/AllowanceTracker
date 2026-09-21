@@ -21,7 +21,10 @@
     15x (150~153)  저장 원자성 — categories/budgets 임시파일+rename, transactions
                    append-only 로그 + 인덱스 제자리 수정/삭제
 
-각 번호는 실행 순서를 강제하지 않는다(테스트별로 독립된 임시 --data-dir 사용).
+모든 테스트가 tests/data 폴더 하나를 공유하며 번호 순서대로 실행된다(unittest
+기본 정렬이 zero-padding 덕분에 번호 순서와 일치함). 데이터가 테스트 사이에
+계속 누적되므로, 실행이 끝난 뒤 tests/data 를 열어보면 요구사항 번호 순서대로
+쌓인 시나리오 결과를 그대로 확인할 수 있다.
 숫자 접두어는 오직 "요구사항 문서의 어느 항목을 검증하는 테스트인지"를 한눈에
 찾기 위한 인덱스다.
 
@@ -41,12 +44,13 @@ from __future__ import annotations
 
 import io
 import re
+import shutil
 import sys
-import tempfile
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Iterable, TextIO
 from unittest import mock
 
@@ -76,13 +80,24 @@ class _TeeIO(io.StringIO):
 
 
 class RequirementChecklistTestCase(unittest.TestCase):
+    # 모든 테스트가 이 폴더 하나를 공유한다(번호 순서대로 실행되며 데이터가 계속
+    # 누적됨). 전체 실행이 끝난 뒤 tests/data 를 직접 열어보면, 요구사항 번호
+    # 순서대로 시나리오가 쌓여 온 결과를 그대로 확인할 수 있다.
+    _DATA_ROOT = Path(__file__).resolve().parent / "data"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if cls._DATA_ROOT.exists():
+            shutil.rmtree(cls._DATA_ROOT)  # 이전 실행 결과를 지우고 새로 시작
+        cls._DATA_ROOT.mkdir(parents=True, exist_ok=True)
+
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
+        self._tmp = SimpleNamespace(name=str(self._DATA_ROOT))  # 기존 self._tmp.name 사용처와 호환
         self.data_dir = Path(self._tmp.name) / "data"
         sys.stdout.write(f"\n{'=' * 72}\n[{self._testMethodName}]\n{'=' * 72}\n")
 
     def tearDown(self) -> None:
-        self._tmp.cleanup()
+        pass  # 수동 확인용으로 결과 파일을 남겨둔다(자동 삭제하지 않음)
 
     def run_cli(self, *argv: str) -> tuple[int, str, str]:
         """CLI 를 실행하고 (종료 코드, stdout, stderr) 를 돌려준다.
@@ -96,6 +111,18 @@ class RequirementChecklistTestCase(unittest.TestCase):
             code = main(["--data-dir", str(self.data_dir), *argv])
         console.write(f"[종료 코드: {code}]\n")
         return code, out.getvalue(), err.getvalue()
+
+    @staticmethod
+    def _extract_id(out: str, prefix: str = "TX") -> str:
+        """`id=TX-7` 형태의 출력에서 실제로 발급된 id를 뽑아낸다.
+
+        데이터가 tests/data 하나에 계속 누적되므로, 몇 번째 id가 나올지는
+        테스트 실행 순서 전체에 좌우된다. 하드코딩된 "TX-1" 대신 이 값을
+        사용해야 다른 테스트가 이미 만들어둔 데이터와 무관하게 항상
+        방금 만든 항목을 정확히 가리킬 수 있다."""
+        match = re.search(rf"id={prefix}-(\d+)", out)
+        assert match is not None, f"id 를 찾을 수 없음: {out!r}"
+        return f"{prefix}-{match.group(1)}"
 
     @contextmanager
     def fake_input(self, answers: Iterable[str]):
@@ -148,6 +175,52 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertIn("category add", err)
 
     # ==================================================================
+    # 000c~000g: "아무것도 없는 초기 상태"를 전제로 하는 검증들을 데이터가
+    # 쌓이기 전인 맨 앞으로 모아둔다(원래 소속 그룹은 각 docstring에 표기).
+    # tests/data 를 전체 테스트가 공유·누적하므로, 이 전제(카테고리/거래
+    # 0건)는 파일 전체에서 여기서만 재현 가능하다.
+    # ==================================================================
+    # 기능(원래 001~003 소속): category list — 카테고리가 하나도 없을 때
+    # "등록된 카테고리가 없습니다" 안내가 출력되는지 검증
+    def test_000c_category_list_when_empty_shows_guidance(self) -> None:
+        code, out, _ = self.run_cli("category", "list")
+        self.assertEqual(code, 0)
+        self.assertIn("등록된 카테고리가 없습니다", out)
+
+    # 기능(원래 02x 소속): list — 등록된 거래가 없을 때 "등록된 거래가
+    # 없습니다" 안내와 add 유도 힌트를 출력하는지 검증
+    def test_000d_list_empty_shows_guidance(self) -> None:
+        code, out, _ = self.run_cli("list")
+        self.assertEqual(code, 0)
+        self.assertIn("[안내] 등록된 거래가 없습니다.", out)
+        self.assertIn("[힌트]", out)
+
+    # 기능(원래 08x 소속): import — 카테고리가 하나도 등록되지 않은 상태면
+    # CSV 내용과 무관하게 가져오기 자체가 차단되는지 검증
+    def test_000e_import_blocked_without_category_registered(self) -> None:
+        source = Path(self._tmp.name) / "in.csv"
+        source.write_text("date,type,category,amount,memo,tags\n2024-03-01,expense,식비,8000,,\n", encoding="utf-8")
+        code, _, err = self.run_cli("import", "--from", str(source))
+        self.assertEqual(code, 1)
+        self.assertIn("등록된 카테고리가 없습니다", err)
+
+    # 기능(원래 11x 소속): 종료 코드 — 검증 오류(ValidationError)가 발생하면
+    # 종료 코드 1 을 반환하는지 검증(카테고리 미등록 상태의 add 로 재현)
+    def test_000f_validation_error_exit_code_is_one(self) -> None:
+        code, _, _ = self.run_cli("add")  # 카테고리 미등록
+        self.assertEqual(code, 1)
+
+    # 기능(원래 13x 소속): recurring add — 카테고리가 하나도 등록되지 않은
+    # 상태에서는 반복 규칙 등록도 차단되는지 검증
+    def test_000g_recurring_add_blocked_without_category(self) -> None:
+        code, _, err = self.run_cli(
+            "recurring", "add", "--day", "25", "--type", "income",
+            "--category", "월급", "--amount", "3000000",
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("등록된 카테고리가 없습니다", err)
+
+    # ==================================================================
     # 001~003: category add / list / remove
     # ==================================================================
     def _seed_categories(self, *names: str) -> None:
@@ -171,14 +244,10 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("이미 등록", err)
 
-    # 기능: category list — 등록된 카테고리가 무엇인지 보여주는 동작만
-    # 검증(카테고리 등록 자체는 _seed_categories 로 미리 준비): 빈 목록 안내와
-    # 등록된 카테고리 전체 목록/개수 출력을 확인
+    # 기능: category list — 등록된 카테고리가 무엇인지 보여주는 동작만 검증
+    # (카테고리 등록 자체는 _seed_categories 로 미리 준비, 빈 목록 안내는
+    # test_000c 로 이동): 등록된 카테고리 전체 목록/개수 출력을 확인
     def test_002_category_list(self) -> None:
-        code, out, _ = self.run_cli("category", "list")
-        self.assertEqual(code, 0)
-        self.assertIn("등록된 카테고리가 없습니다", out)
-
         self._seed_categories("식비", "교통", "월급")
         code, out, _ = self.run_cli("category", "list")
         self.assertEqual(code, 0)
@@ -221,7 +290,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
             "--category", "식비", "--amount", "7000", "--memo", "저녁", "--tags", "외식,저녁",
         )
         self.assertEqual(code, 0)
-        self.assertIn("[저장 완료] id=TX-1", out)
+        self.assertRegex(out, r"\[저장 완료\] id=TX-\d+")
 
         code, out, _ = self.run_cli("list")
         self.assertIn("2024-05-01", out)
@@ -236,7 +305,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
         with self.fake_input(["2024-01-07", "expense", "1", "5500", "커피", "카페,간식"]):
             code, out, _ = self.run_cli("add")
         self.assertEqual(code, 0)
-        self.assertIn("[저장 완료] id=TX-1", out)
+        self.assertRegex(out, r"\[저장 완료\] id=TX-\d+")
 
         code, out, _ = self.run_cli("search", "--tag", "간식")
         self.assertIn("5,500", out)
@@ -276,68 +345,80 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("등록되지 않은 카테고리", err)
 
+        ids: list[int] = []
         for day in range(1, 4):
             code, out, _ = self.run_cli(
                 "add", "--date", f"2024-05-0{day}", "--type", "expense",
                 "--category", "식비", "--amount", "1000",
             )
-            self.assertIn(f"id=TX-{day}", out)  # id 는 실패한 시도를 세지 않고 연속 발급
+            self.assertEqual(code, 0)
+            ids.append(int(self._extract_id(out).split("-")[1]))
+        # id 는 실패한 시도를 세지 않고, 이전 성공 시도 바로 다음부터 연속 발급되어야 한다
+        self.assertEqual(ids, [ids[0], ids[0] + 1, ids[0] + 2])
 
     # ==================================================================
     # 02x: 거래 목록 (list) — --limit/--all, 최신순, 스트리밍, 빈 목록
     # ==================================================================
-    def _seed_transactions(self, count: int, *, category: str = "식비") -> None:
+    def _seed_transactions(self, count: int, *, category: str = "식비") -> list[int]:
+        """거래 count 건을 등록하고, 실제로 발급된 id 들을 등록 순서대로 돌려준다."""
         self.run_cli("category", "add", "--name", category)
+        ids: list[int] = []
         for day in range(1, count + 1):
-            self.run_cli(
+            _, out, _ = self.run_cli(
                 "add", "--date", f"2024-01-{day:02d}", "--type", "expense",
                 "--category", category, "--amount", str(day * 100),
             )
+            ids.append(int(self._extract_id(out).split("-")[1]))
+        return ids
+
+    def _transaction_count(self) -> int:
+        """현재까지 누적된 전체 거래 건수(다른 테스트가 먼저 만든 것 포함)."""
+        _, out, _ = self.run_cli("list", "--all")
+        if "등록된 거래가 없습니다" in out:
+            return 0
+        return int(re.search(r"(\d+)건 출력", out).group(1))
 
     # 기능: list — --limit 옵션 없이 실행하면 기본값(20건)까지만 출력하고
     # "N건 출력 / 전체 M건" 안내가 붙는지 검증
     def test_020_list_default_limit(self) -> None:
-        self._seed_transactions(22)
+        before_total = self._transaction_count()
+        ids = self._seed_transactions(22)
         code, out, _ = self.run_cli("list")  # --limit 옵션 없이 기본값 사용
         self.assertEqual(code, 0)
-        self.assertIn("TX-22", out)
-        self.assertNotIn("TX-2 ", out)  # 20건까지만: 3~22 가 보이고 1~2 는 안 보임
+        self.assertIn(f"TX-{ids[-1]}", out)  # 방금 넣은 마지막(가장 최신) 거래
+        self.assertNotIn(f"TX-{ids[1]} ", out)  # 20건까지만: 뒤 20개만 보이고 앞 2개는 안 보임
         self.assertIn("20건 출력", out)
-        self.assertIn("전체 22건", out)
+        self.assertIn(f"전체 {before_total + 22}건", out)
 
     # 기능: list — --limit N 옵션으로 출력 건수를 제한할 수 있는지 검증
     def test_021_list_limit_option(self) -> None:
-        self._seed_transactions(5)
+        ids = self._seed_transactions(5)
         code, out, _ = self.run_cli("list", "--limit", "2")
         self.assertEqual(code, 0)
-        self.assertIn("TX-5", out)
-        self.assertIn("TX-4", out)
-        self.assertNotIn("TX-3", out)
+        self.assertIn(f"TX-{ids[-1]}", out)
+        self.assertIn(f"TX-{ids[-2]}", out)
+        self.assertNotIn(f"TX-{ids[-3]} ", out)
 
     # 기능: list — --all 옵션을 주면 --limit 을 무시하고 전체를 출력하는지 검증
     def test_022_list_all_option_ignores_limit(self) -> None:
-        self._seed_transactions(25)
+        before_total = self._transaction_count()
+        ids = self._seed_transactions(25)
         code, out, _ = self.run_cli("list", "--limit", "5", "--all")
         self.assertEqual(code, 0)
-        self.assertIn("TX-25", out)
-        self.assertIn("TX-1 ", out)
-        self.assertIn("25건 출력", out)
+        self.assertIn(f"TX-{ids[-1]}", out)  # 최신(방금 추가한 마지막) 거래
+        self.assertIn(f"TX-{ids[0]} ", out)  # 가장 오래된(방금 추가한 첫) 거래도 --all 이라 보임
+        self.assertIn(f"{before_total + 25}건 출력", out)
         self.assertNotIn("전체", out)  # --all 이면 "N건 출력 / 전체 M건" 접미사가 붙지 않음
 
     # 기능: list — 거래가 최신순(id 내림차순)으로 정렬되어 출력되는지 검증
     def test_023_list_is_newest_first(self) -> None:
-        self._seed_transactions(3)
+        ids = self._seed_transactions(3)
         code, out, _ = self.run_cli("list")
-        self.assertLess(out.index("TX-3"), out.index("TX-2"))
-        self.assertLess(out.index("TX-2"), out.index("TX-1"))
+        self.assertLess(out.index(f"TX-{ids[2]} "), out.index(f"TX-{ids[1]} "))
+        self.assertLess(out.index(f"TX-{ids[1]} "), out.index(f"TX-{ids[0]} "))
 
-    # 기능: list — 등록된 거래가 없을 때 "등록된 거래가 없습니다" 안내와
-    # add 유도 힌트를 출력하는지 검증
-    def test_024_list_empty_shows_guidance(self) -> None:
-        code, out, _ = self.run_cli("list")
-        self.assertEqual(code, 0)
-        self.assertIn("[안내] 등록된 거래가 없습니다.", out)
-        self.assertIn("[힌트]", out)
+    # 기능: list — 등록된 거래가 없을 때 안내 문구 검증은 test_000d 로 이동
+    # (전역적으로 거래 0건인 시점은 파일 맨 앞에서만 재현 가능하므로).
 
     # ==================================================================
     # 03x: 거래 수정 (update) — 옵션 기반, 부분 수정, 없는 id, 값 검증
@@ -346,13 +427,14 @@ class RequirementChecklistTestCase(unittest.TestCase):
     # 그대로 유지되는지 검증
     def test_030_update_single_field_keeps_other_fields(self) -> None:
         self.run_cli("category", "add", "--name", "식비")
-        self.run_cli(
+        _, add_out, _ = self.run_cli(
             "add", "--date", "2024-01-05", "--type", "expense",
             "--category", "식비", "--amount", "12000", "--memo", "점심",
         )
-        code, out, _ = self.run_cli("update", "--id", "TX-1", "--amount", "5000")
+        tx_id = self._extract_id(add_out)
+        code, out, _ = self.run_cli("update", "--id", tx_id, "--amount", "5000")
         self.assertEqual(code, 0)
-        self.assertIn("[수정 완료] id=TX-1", out)
+        self.assertIn(f"[수정 완료] id={tx_id}", out)
 
         code, out, _ = self.run_cli("list")
         self.assertIn("5,000", out)
@@ -363,12 +445,13 @@ class RequirementChecklistTestCase(unittest.TestCase):
     def test_031_update_multiple_fields_at_once(self) -> None:
         self.run_cli("category", "add", "--name", "식비")
         self.run_cli("category", "add", "--name", "교통")
-        self.run_cli(
+        _, add_out, _ = self.run_cli(
             "add", "--date", "2024-01-05", "--type", "expense",
             "--category", "식비", "--amount", "12000",
         )
+        tx_id = self._extract_id(add_out)
         code, out, _ = self.run_cli(
-            "update", "--id", "TX-1", "--date", "2024-02-01",
+            "update", "--id", tx_id, "--date", "2024-02-01",
             "--category", "교통", "--amount", "1250", "--tags", "버스",
         )
         self.assertEqual(code, 0)
@@ -381,15 +464,18 @@ class RequirementChecklistTestCase(unittest.TestCase):
     # 기능: update — 존재하지 않는 id 를 수정하려 하면 오류로 처리되는지 검증
     def test_032_update_missing_id_returns_error(self) -> None:
         self.run_cli("category", "add", "--name", "식비")
-        code, _, err = self.run_cli("update", "--id", "TX-999", "--amount", "1")
+        code, _, err = self.run_cli("update", "--id", "TX-999999", "--amount", "1")
         self.assertEqual(code, 1)
-        self.assertIn("TX-999", err)
+        self.assertIn("TX-999999", err)
 
     # 기능: update — 수정할 필드를 하나도 지정하지 않으면 오류로 처리되는지 검증
     def test_033_update_no_fields_specified_returns_error(self) -> None:
         self.run_cli("category", "add", "--name", "식비")
-        self.run_cli("add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "1000")
-        code, _, err = self.run_cli("update", "--id", "TX-1")
+        _, add_out, _ = self.run_cli(
+            "add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "1000"
+        )
+        tx_id = self._extract_id(add_out)
+        code, _, err = self.run_cli("update", "--id", tx_id)
         self.assertEqual(code, 1)
         self.assertIn("수정할 항목이 지정되지 않았습니다", err)
 
@@ -397,8 +483,11 @@ class RequirementChecklistTestCase(unittest.TestCase):
     # 데이터가 손상되지 않고 그대로 유지되는지 검증
     def test_034_update_invalid_value_is_rejected_and_leaves_data_untouched(self) -> None:
         self.run_cli("category", "add", "--name", "식비")
-        self.run_cli("add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "1000")
-        code, _, err = self.run_cli("update", "--id", "TX-1", "--amount", "abc")
+        _, add_out, _ = self.run_cli(
+            "add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "1000"
+        )
+        tx_id = self._extract_id(add_out)
+        code, _, err = self.run_cli("update", "--id", tx_id, "--amount", "abc")
         self.assertEqual(code, 1)
         self.assertIn("[오류]", err)
 
@@ -411,123 +500,137 @@ class RequirementChecklistTestCase(unittest.TestCase):
     # 기능: delete — --id 로 거래를 삭제하면 목록에서 사라지는지 검증
     def test_040_delete_success(self) -> None:
         self.run_cli("category", "add", "--name", "식비")
-        self.run_cli("add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "1000")
-        code, out, _ = self.run_cli("delete", "--id", "TX-1", "--yes")
+        _, add_out, _ = self.run_cli(
+            "add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "1000"
+        )
+        tx_id = self._extract_id(add_out)
+        code, out, _ = self.run_cli("delete", "--id", tx_id, "--yes")
         self.assertEqual(code, 0)
         self.assertIn("[삭제 완료]", out)
         code, out, _ = self.run_cli("list")
-        self.assertNotIn("TX-1", out)
+        self.assertNotIn(f"{tx_id} ", out)
 
     # 기능: delete — 존재하지 않는 id 를 삭제하려 하면 오류로 처리되는지 검증
     def test_041_delete_missing_id_returns_error(self) -> None:
         self.run_cli("category", "add", "--name", "식비")
-        code, _, err = self.run_cli("delete", "--id", "TX-999", "--yes")
+        code, _, err = self.run_cli("delete", "--id", "TX-999999", "--yes")
         self.assertEqual(code, 1)
-        self.assertIn("TX-999", err)
+        self.assertIn("TX-999999", err)
 
     # 기능: delete — 이미 삭제된 id 를 다시 삭제하려 하면 "없는 데이터"로
     # 처리되는지 검증
     def test_042_delete_already_deleted_id_returns_error(self) -> None:
         self.run_cli("category", "add", "--name", "식비")
-        self.run_cli("add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "1000")
-        self.run_cli("delete", "--id", "TX-1", "--yes")
-        code, _, err = self.run_cli("delete", "--id", "TX-1", "--yes")
+        _, add_out, _ = self.run_cli(
+            "add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "1000"
+        )
+        tx_id = self._extract_id(add_out)
+        self.run_cli("delete", "--id", tx_id, "--yes")
+        code, _, err = self.run_cli("delete", "--id", tx_id, "--yes")
         self.assertEqual(code, 1)
-        self.assertIn("TX-1", err)
+        self.assertIn(tx_id, err)
 
     # 기능: delete — 대화형 터미널에서 --yes 없이 삭제 시 확인 프롬프트가
     # 뜨고, "아니오"를 선택하면 삭제가 취소되고 거래가 남아있는지 검증
     def test_043_delete_confirmation_prompt_cancel_keeps_transaction(self) -> None:
         self.run_cli("category", "add", "--name", "식비")
-        self.run_cli("add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "1000")
+        _, add_out, _ = self.run_cli(
+            "add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "1000"
+        )
+        tx_id = self._extract_id(add_out)
         with mock.patch("sys.stdin.isatty", return_value=True), self.fake_input(["n"]):
-            code, out, _ = self.run_cli("delete", "--id", "TX-1")
+            code, out, _ = self.run_cli("delete", "--id", tx_id)
         self.assertEqual(code, 0)
         self.assertIn("취소", out)
 
         code, out, _ = self.run_cli("list")
-        self.assertIn("TX-1", out)
+        self.assertIn(tx_id, out)
 
     # 기능: delete — --yes 플래그를 주면 대화형 터미널이어도 확인 프롬프트
     # 없이 바로 삭제되는지 검증
     def test_044_delete_yes_flag_skips_confirmation_prompt(self) -> None:
         self.run_cli("category", "add", "--name", "식비")
-        self.run_cli("add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "1000")
+        _, add_out, _ = self.run_cli(
+            "add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "1000"
+        )
+        tx_id = self._extract_id(add_out)
         with mock.patch("sys.stdin.isatty", return_value=True), mock.patch(
             "builtins.input", side_effect=AssertionError("--yes 인데 확인 프롬프트가 호출되면 안 됨")
         ):
-            code, out, _ = self.run_cli("delete", "--id", "TX-1", "--yes")
+            code, out, _ = self.run_cli("delete", "--id", tx_id, "--yes")
         self.assertEqual(code, 0)
         self.assertIn("[삭제 완료]", out)
 
     # ==================================================================
     # 05x: 거래 검색 (search) — 옵션별 + AND 결합, 최신순
     # ==================================================================
-    def _seed_search_fixture(self) -> None:
+    def _seed_search_fixture(self) -> tuple[str, str, str]:
+        """검색용 거래 3건을 등록하고 (id1, id2, id3) 를 돌려준다."""
         self.run_cli("category", "add", "--name", "식비")
         self.run_cli("category", "add", "--name", "교통")
-        self.run_cli(
+        _, out1, _ = self.run_cli(
             "add", "--date", "2024-01-05", "--type", "expense",
             "--category", "식비", "--amount", "12000", "--memo", "점심 김밥", "--tags", "외식,점심",
-        )  # TX-1
-        self.run_cli(
+        )
+        _, out2, _ = self.run_cli(
             "add", "--date", "2024-01-06", "--type", "expense",
             "--category", "교통", "--amount", "1250", "--memo", "버스",
-        )  # TX-2
-        self.run_cli(
+        )
+        _, out3, _ = self.run_cli(
             "add", "--date", "2024-02-01", "--type", "income",
             "--category", "식비", "--amount", "30000", "--memo", "저녁 김밥", "--tags", "외식",
-        )  # TX-3
+        )
+        return self._extract_id(out1), self._extract_id(out2), self._extract_id(out3)
 
     # 기능: search --from/--to — 지정한 기간 안에 있는 거래만 검색되는지 검증
     def test_050_search_by_date_range(self) -> None:
-        self._seed_search_fixture()
+        id1, id2, id3 = self._seed_search_fixture()
         code, out, _ = self.run_cli("search", "--from", "2024-01-01", "--to", "2024-01-31")
         self.assertEqual(code, 0)
-        self.assertIn("TX-1", out)
-        self.assertIn("TX-2", out)
-        self.assertNotIn("TX-3", out)
+        self.assertIn(f"{id1} ", out)
+        self.assertIn(f"{id2} ", out)
+        self.assertNotIn(f"{id3} ", out)
 
     # 기능: search --category — 지정한 카테고리 거래만 검색되는지 검증
     def test_051_search_by_category(self) -> None:
-        self._seed_search_fixture()
+        id1, id2, id3 = self._seed_search_fixture()
         code, out, _ = self.run_cli("search", "--category", "교통")
         self.assertEqual(code, 0)
-        self.assertIn("TX-2", out)
-        self.assertNotIn("TX-1", out)
-        self.assertNotIn("TX-3", out)
+        self.assertIn(f"{id2} ", out)
+        self.assertNotIn(f"{id1} ", out)
+        self.assertNotIn(f"{id3} ", out)
 
     # 기능: search --type — income/expense 타입으로 필터링되는지 검증
     def test_052_search_by_type(self) -> None:
-        self._seed_search_fixture()
+        id1, id2, id3 = self._seed_search_fixture()
         code, out, _ = self.run_cli("search", "--type", "income")
         self.assertEqual(code, 0)
-        self.assertIn("TX-3", out)
-        self.assertNotIn("TX-1", out)
-        self.assertNotIn("TX-2", out)
+        self.assertIn(f"{id3} ", out)
+        self.assertNotIn(f"{id1} ", out)
+        self.assertNotIn(f"{id2} ", out)
 
     # 기능: search --q — 메모 안의 키워드로 검색되는지 검증
     def test_053_search_by_memo_keyword(self) -> None:
-        self._seed_search_fixture()
+        id1, id2, id3 = self._seed_search_fixture()
         code, out, _ = self.run_cli("search", "--q", "김밥")
         self.assertEqual(code, 0)
-        self.assertIn("TX-1", out)
-        self.assertIn("TX-3", out)
-        self.assertNotIn("TX-2", out)
+        self.assertIn(f"{id1} ", out)
+        self.assertIn(f"{id3} ", out)
+        self.assertNotIn(f"{id2} ", out)
 
     # 기능: search --tag — 지정한 태그를 가진 거래만 검색되는지 검증
     def test_054_search_by_tag(self) -> None:
-        self._seed_search_fixture()
+        id1, id2, id3 = self._seed_search_fixture()
         code, out, _ = self.run_cli("search", "--tag", "점심")
         self.assertEqual(code, 0)
-        self.assertIn("TX-1", out)
-        self.assertNotIn("TX-2", out)
-        self.assertNotIn("TX-3", out)
+        self.assertIn(f"{id1} ", out)
+        self.assertNotIn(f"{id2} ", out)
+        self.assertNotIn(f"{id3} ", out)
 
     # 기능: search — --from/--to/--category/--type/--q/--tag 를 동시에 지정하면
     # AND 조건으로 결합되는지 검증
     def test_055_search_combines_all_filters_with_and(self) -> None:
-        self._seed_search_fixture()
+        id1, id2, id3 = self._seed_search_fixture()
         code, out, _ = self.run_cli(
             "search",
             "--from", "2024-01-01", "--to", "2024-01-31",
@@ -535,9 +638,9 @@ class RequirementChecklistTestCase(unittest.TestCase):
             "--q", "김밥", "--tag", "점심",
         )
         self.assertEqual(code, 0)
-        self.assertIn("TX-1", out)
-        self.assertNotIn("TX-2", out)
-        self.assertNotIn("TX-3", out)
+        self.assertIn(f"{id1} ", out)
+        self.assertNotIn(f"{id2} ", out)
+        self.assertNotIn(f"{id3} ", out)
 
     # 기능: search — 조건을 하나도 지정하지 않으면 오류로 처리되는지 검증
     def test_056_search_requires_at_least_one_condition(self) -> None:
@@ -548,9 +651,9 @@ class RequirementChecklistTestCase(unittest.TestCase):
 
     # 기능: search — 검색 결과도 list 와 마찬가지로 최신순으로 정렬되는지 검증
     def test_057_search_results_are_newest_first(self) -> None:
-        self._seed_search_fixture()
+        id1, _id2, id3 = self._seed_search_fixture()
         code, out, _ = self.run_cli("search", "--category", "식비")
-        self.assertLess(out.index("TX-3"), out.index("TX-1"))
+        self.assertLess(out.index(f"{id3} "), out.index(f"{id1} "))
 
     # ==================================================================
     # 06x: 예산 설정/조회 (budget)
@@ -608,21 +711,26 @@ class RequirementChecklistTestCase(unittest.TestCase):
 
     # 기능: budget + summary — 예산 대비 사용률(%)이 초과 없이 계산되어
     # summary 에 반영되는지 검증
+    # 이 아래 테스트들은 데이터가 tests/data 하나에 누적되므로, 다른 테스트가
+    # 이미 대량으로 거래를 넣어둔 "2024-01"을 쓰면 총액/퍼센트 계산이 어긋난다.
+    # 그래서 이 시점까지 아무도 건드리지 않은 전용 월을 하나씩 쓴다.
     def test_065_budget_usage_percent_without_overrun(self) -> None:
+        month = "2088-01"
         self.run_cli("category", "add", "--name", "식비")
-        self.run_cli("budget", "set", "--month", "2024-01", "--amount", "10000")
-        self.run_cli("add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "5000")
-        code, out, _ = self.run_cli("summary", "--month", "2024-01")
+        self.run_cli("budget", "set", "--month", month, "--amount", "10000")
+        self.run_cli("add", "--date", f"{month}-05", "--type", "expense", "--category", "식비", "--amount", "5000")
+        code, out, _ = self.run_cli("summary", "--month", month)
         self.assertIn("50.0%", out)
         self.assertNotIn("[경고]", out)
 
     # 기능: budget + summary — 지출이 예산을 초과하면 초과 금액과 함께
     # 경고 문구가 출력되는지 검증
     def test_066_budget_usage_overrun_warning(self) -> None:
+        month = "2088-02"
         self.run_cli("category", "add", "--name", "식비")
-        self.run_cli("budget", "set", "--month", "2024-01", "--amount", "10000")
-        self.run_cli("add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "13000")
-        code, out, _ = self.run_cli("summary", "--month", "2024-01")
+        self.run_cli("budget", "set", "--month", month, "--amount", "10000")
+        self.run_cli("add", "--date", f"{month}-05", "--type", "expense", "--category", "식비", "--amount", "13000")
+        code, out, _ = self.run_cli("summary", "--month", month)
         self.assertIn("[경고]", out)
         self.assertIn("3,000원 초과", out)
 
@@ -631,12 +739,13 @@ class RequirementChecklistTestCase(unittest.TestCase):
     # ==================================================================
     # 기능: summary — 총 수입/총 지출/잔액(수입-지출)이 올바르게 계산/출력되는지 검증
     def test_070_summary_totals_and_balance(self) -> None:
+        month = "2088-03"
         self.run_cli("category", "add", "--name", "식비")
         self.run_cli("category", "add", "--name", "월급")
-        self.run_cli("add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "12000")
-        self.run_cli("add", "--date", "2024-01-25", "--type", "income", "--category", "월급", "--amount", "3000000")
+        self.run_cli("add", "--date", f"{month}-05", "--type", "expense", "--category", "식비", "--amount", "12000")
+        self.run_cli("add", "--date", f"{month}-25", "--type", "income", "--category", "월급", "--amount", "3000000")
 
-        code, out, _ = self.run_cli("summary", "--month", "2024-01")
+        code, out, _ = self.run_cli("summary", "--month", month)
         self.assertEqual(code, 0)
         self.assertIn("총 수입", out)
         self.assertIn("3,000,000", out)
@@ -667,20 +776,22 @@ class RequirementChecklistTestCase(unittest.TestCase):
 
     # 기능: summary — 예산이 설정된 달이면 예산 사용률(%)이 함께 출력되는지 검증
     def test_073_summary_reflects_budget_usage(self) -> None:
+        month = "2088-04"
         self.run_cli("category", "add", "--name", "식비")
-        self.run_cli("budget", "set", "--month", "2024-01", "--amount", "20000")
-        self.run_cli("add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "12000")
+        self.run_cli("budget", "set", "--month", month, "--amount", "20000")
+        self.run_cli("add", "--date", f"{month}-05", "--type", "expense", "--category", "식비", "--amount", "12000")
 
-        code, out, _ = self.run_cli("summary", "--month", "2024-01")
+        code, out, _ = self.run_cli("summary", "--month", month)
         self.assertIn("예산", out)
         self.assertIn("60.0%", out)
 
     # 기능: summary — 예산이 설정되지 않은 달은 "설정되지 않음"으로
     # 명확히 표시되는지 검증
     def test_074_summary_without_budget_shows_not_set(self) -> None:
+        month = "2088-05"
         self.run_cli("category", "add", "--name", "식비")
-        self.run_cli("add", "--date", "2024-01-05", "--type", "expense", "--category", "식비", "--amount", "1000")
-        code, out, _ = self.run_cli("summary", "--month", "2024-01")
+        self.run_cli("add", "--date", f"{month}-05", "--type", "expense", "--category", "식비", "--amount", "1000")
+        code, out, _ = self.run_cli("summary", "--month", month)
         self.assertIn("설정되지 않음", out)
 
     # 기능: summary — --month 를 지정하지 않으면 실행 자체가 거부되는지 검증
@@ -740,35 +851,30 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("amount", err)
 
-    # 기능: import — 카테고리가 하나도 등록되지 않은 상태면 CSV 내용과 무관하게
-    # 가져오기 자체가 차단되는지 검증
-    def test_084_import_blocked_without_category_registered(self) -> None:
-        source = Path(self._tmp.name) / "in.csv"
-        source.write_text("date,type,category,amount,memo,tags\n2024-03-01,expense,식비,8000,,\n", encoding="utf-8")
-        code, _, err = self.run_cli("import", "--from", str(source))
-        self.assertEqual(code, 1)
-        self.assertIn("등록된 카테고리가 없습니다", err)
+    # 기능: import — 카테고리 미등록 시 차단 검증은 test_000e 로 이동
+    # (전역적으로 카테고리 0건인 시점은 파일 맨 앞에서만 재현 가능하므로).
 
     # ==================================================================
     # 09x: 내보내기 (export)
     # ==================================================================
     # 기능: export --month — 지정한 월의 거래만 CSV 로 내보내는지 검증
     def test_090_export_by_month(self) -> None:
+        month = "2088-06"
         self.run_cli("category", "add", "--name", "식비")
-        self.run_cli("add", "--date", "2024-03-01", "--type", "expense", "--category", "식비", "--amount", "8000")
-        target = Path(self._tmp.name) / "out.csv"
-        code, out, _ = self.run_cli("export", "--out", str(target), "--month", "2024-03")
+        self.run_cli("add", "--date", f"{month}-01", "--type", "expense", "--category", "식비", "--amount", "8000")
+        target = Path(self._tmp.name) / "out_090.csv"
+        code, out, _ = self.run_cli("export", "--out", str(target), "--month", month)
         self.assertEqual(code, 0)
         self.assertIn("(1 records)", out)
 
     # 기능: export --from/--to — 지정한 날짜 범위의 거래만 CSV 로 내보내는지 검증
     def test_091_export_by_date_range(self) -> None:
         self.run_cli("category", "add", "--name", "식비")
-        self.run_cli("add", "--date", "2024-03-01", "--type", "expense", "--category", "식비", "--amount", "8000")
-        self.run_cli("add", "--date", "2024-04-01", "--type", "expense", "--category", "식비", "--amount", "9000")
-        target = Path(self._tmp.name) / "out.csv"
+        self.run_cli("add", "--date", "2088-07-01", "--type", "expense", "--category", "식비", "--amount", "8000")
+        self.run_cli("add", "--date", "2088-08-01", "--type", "expense", "--category", "식비", "--amount", "9000")
+        target = Path(self._tmp.name) / "out_091.csv"
         code, out, _ = self.run_cli(
-            "export", "--out", str(target), "--from", "2024-03-01", "--to", "2024-03-31"
+            "export", "--out", str(target), "--from", "2088-07-01", "--to", "2088-07-31"
         )
         self.assertEqual(code, 0)
         self.assertIn("(1 records)", out)
@@ -822,7 +928,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
     # 기능: 데코레이터(@log_call/@timeit) — --verbose 를 주면 실행 로그와
     # 실행 시간 로그가 stderr 로 출력되는지 검증
     def test_100_verbose_flag_enables_debug_logs(self) -> None:
-        code, _, err = self.run_cli("--verbose", "category", "add", "--name", "식비")
+        code, _, err = self.run_cli("--verbose", "category", "add", "--name", "verbose_테스트용_카테고리_100")
         self.assertEqual(code, 0)
         self.assertIn("[log]", err)
         self.assertIn("실행 시간", err)
@@ -830,7 +936,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
     # 기능: 데코레이터 — --verbose 없이 실행하면 디버그 로그가 전혀 찍히지
     # 않는지 검증
     def test_101_without_verbose_no_debug_logs(self) -> None:
-        code, _, err = self.run_cli("category", "add", "--name", "식비")
+        code, _, err = self.run_cli("category", "add", "--name", "verbose_테스트용_카테고리_101")
         self.assertEqual(code, 0)
         self.assertNotIn("[log]", err)
 
@@ -849,16 +955,13 @@ class RequirementChecklistTestCase(unittest.TestCase):
         code, _, _ = self.run_cli("category", "list")
         self.assertEqual(code, 0)
 
-    # 기능: 종료 코드 — 검증 오류(ValidationError)가 발생하면 종료 코드
-    # 1 을 반환하는지 검증
-    def test_111_validation_error_exit_code_is_one(self) -> None:
-        code, _, _ = self.run_cli("add")  # 카테고리 미등록
-        self.assertEqual(code, 1)
+    # 기능: 종료 코드 — 검증 오류(ValidationError) 시 종료 코드 1 검증은
+    # test_000f 로 이동(전역적으로 카테고리 0건인 시점이 필요하므로).
 
     # 기능: 예외 처리(@handle_errors) — 오류 메시지가 파이썬 스택트레이스가
     # 아니라 "[오류] 원인" 형태로만 출력되는지 검증
     def test_112_error_output_has_cause_and_hint_not_stacktrace(self) -> None:
-        code, _, err = self.run_cli("update", "--id", "TX-999", "--amount", "1")
+        code, _, err = self.run_cli("update", "--id", "TX-999999", "--amount", "1")
         self.assertEqual(code, 1)
         self.assertIn("[오류]", err)
         self.assertNotIn("Traceback", err)
@@ -917,20 +1020,25 @@ class RequirementChecklistTestCase(unittest.TestCase):
             "--category", "월급", "--amount", "3000000", "--memo", "정기 급여",
         )
         self.assertEqual(code, 0)
-        self.assertIn("[저장 완료] id=RC-1", out)
+        rc_id = self._extract_id(out, prefix="RC")
+        self.assertRegex(out, r"\[저장 완료\] id=RC-\d+")
 
         code, out, _ = self.run_cli("recurring", "list")
-        self.assertIn("RC-1", out)
+        self.assertIn(rc_id, out)
         self.assertIn("월급", out)
+        # recurring apply 는 활성 규칙 전체에 적용되므로, 뒤 테스트(131 등)의
+        # "규칙 1개 기준" 전제가 깨지지 않도록 여기서 만든 규칙은 정리해둔다.
+        self.run_cli("recurring", "remove", "--id", rc_id)
 
     # 기능: recurring apply — 등록된 규칙으로 지정한 월에 거래가 자동
     # 생성되는지 검증
     def test_131_recurring_apply_creates_transaction_for_month(self) -> None:
         self.run_cli("category", "add", "--name", "월급")
-        self.run_cli(
+        _, add_out, _ = self.run_cli(
             "recurring", "add", "--day", "25", "--type", "income",
             "--category", "월급", "--amount", "3000000",
         )
+        rc_id = self._extract_id(add_out, prefix="RC")
         code, out, _ = self.run_cli("recurring", "apply", "--month", "2024-04")
         self.assertEqual(code, 0)
         self.assertIn("생성 1건", out)
@@ -938,31 +1046,35 @@ class RequirementChecklistTestCase(unittest.TestCase):
         code, out, _ = self.run_cli("list")
         self.assertIn("2024-04-25", out)
         self.assertIn("3,000,000", out)
+        self.run_cli("recurring", "remove", "--id", rc_id)  # 뒤 테스트를 위해 정리
 
     # 기능: recurring apply — 같은 달에 이미 적용한 규칙을 다시 적용하면
     # 중복 생성되지 않고 "건너뜀"으로 처리되는지 검증
     def test_132_recurring_apply_skips_already_applied_month(self) -> None:
         self.run_cli("category", "add", "--name", "월급")
-        self.run_cli(
+        _, add_out, _ = self.run_cli(
             "recurring", "add", "--day", "25", "--type", "income",
             "--category", "월급", "--amount", "3000000",
         )
+        rc_id = self._extract_id(add_out, prefix="RC")
         self.run_cli("recurring", "apply", "--month", "2024-04")
         code, out, _ = self.run_cli("recurring", "apply", "--month", "2024-04")
         self.assertEqual(code, 0)
         self.assertIn("생성 0건", out)
         self.assertIn("건너뜀 1건", out)
+        self.run_cli("recurring", "remove", "--id", rc_id)  # 뒤 테스트를 위해 정리
 
     # 기능: recurring remove — 반복 규칙을 삭제하면 목록에서 사라지는지 검증
     def test_133_recurring_remove(self) -> None:
         self.run_cli("category", "add", "--name", "월급")
-        self.run_cli(
+        _, add_out, _ = self.run_cli(
             "recurring", "add", "--day", "25", "--type", "income",
             "--category", "월급", "--amount", "3000000",
         )
-        code, out, _ = self.run_cli("recurring", "remove", "--id", "RC-1")
+        rc_id = self._extract_id(add_out, prefix="RC")
+        code, out, _ = self.run_cli("recurring", "remove", "--id", rc_id)
         self.assertEqual(code, 0)
-        self.assertIn("[삭제 완료] id=RC-1", out)
+        self.assertIn(f"[삭제 완료] id={rc_id}", out)
 
         code, out, _ = self.run_cli("recurring", "list")
         self.assertIn("등록된 반복 규칙이 없습니다", out)
@@ -971,24 +1083,19 @@ class RequirementChecklistTestCase(unittest.TestCase):
     # 말일로 보정되어 생성되는지 검증
     def test_134_recurring_apply_clamps_day_to_month_end(self) -> None:
         self.run_cli("category", "add", "--name", "월세")
-        self.run_cli(
+        _, add_out, _ = self.run_cli(
             "recurring", "add", "--day", "31", "--type", "expense",
             "--category", "월세", "--amount", "500000",
         )
+        rc_id = self._extract_id(add_out, prefix="RC")
         code, out, _ = self.run_cli("recurring", "apply", "--month", "2024-04")  # 4월은 30일까지
         self.assertEqual(code, 0)
         code, out, _ = self.run_cli("list")
         self.assertIn("2024-04-30", out)
+        self.run_cli("recurring", "remove", "--id", rc_id)  # 뒤 테스트를 위해 정리
 
-    # 기능: recurring add — 카테고리가 하나도 등록되지 않은 상태에서는
-    # 반복 규칙 등록도 차단되는지 검증
-    def test_135_recurring_add_blocked_without_category(self) -> None:
-        code, _, err = self.run_cli(
-            "recurring", "add", "--day", "25", "--type", "income",
-            "--category", "월급", "--amount", "3000000",
-        )
-        self.assertEqual(code, 1)
-        self.assertIn("등록된 카테고리가 없습니다", err)
+    # 기능: recurring add — 카테고리 미등록 시 차단 검증은 test_000g 로 이동
+    # (전역적으로 카테고리 0건인 시점은 파일 맨 앞에서만 재현 가능하므로).
 
     # ==================================================================
     # 14x: 출력 포맷 — 표/막대 그래프가 실제 CLI 출력에 반영되는지
@@ -1045,7 +1152,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
         original = path.read_text(encoding="utf-8")
 
         with mock.patch("budget_app.stores.os.replace", side_effect=OSError("simulated disk failure")):
-            code, _, err = self.run_cli("category", "add", "--name", "교통")
+            code, _, err = self.run_cli("category", "add", "--name", "저장원자성테스트카테고리")
         self.assertEqual(code, 1)
         self.assertIn("입출력 오류", err)
         # os.replace 가 실패했으므로 원본 파일은 절대 손상되지 않아야 한다(임시파일에만 썼다가 교체 직전에 실패).
@@ -1068,43 +1175,51 @@ class RequirementChecklistTestCase(unittest.TestCase):
     # 갱신되는지 검증
     def test_152_update_appends_to_log_and_overwrites_index_slot_in_place(self) -> None:
         self.run_cli("category", "add", "--name", "식비")
-        self.run_cli("add", "--date", "2024-01-01", "--type", "expense", "--category", "식비", "--amount", "1000")
+        _, add_out, _ = self.run_cli(
+            "add", "--date", "2024-01-01", "--type", "expense", "--category", "식비", "--amount", "1000"
+        )
+        tx_id = self._extract_id(add_out)
 
         log_path = self.data_dir / "transactions.jsonl"
         idx_path = self.data_dir / "transactions.idx"
         lines_before = log_path.read_text(encoding="utf-8").strip().splitlines()
+        line_count_before = len(lines_before)
         idx_size_before = idx_path.stat().st_size
-        self.assertEqual(len(lines_before), 1)
 
-        self.run_cli("update", "--id", "TX-1", "--amount", "2000")
+        self.run_cli("update", "--id", tx_id, "--amount", "2000")
 
         lines_after = log_path.read_text(encoding="utf-8").strip().splitlines()
         idx_size_after = idx_path.stat().st_size
-        self.assertEqual(len(lines_after), 2)  # 옛 버전은 그대로 남고 새 버전이 끝에 append 됨
-        self.assertIn('"amount": 1000', lines_after[0])
-        self.assertIn('"amount": 2000', lines_after[1])
+        # 옛 버전은 그대로 남고 새 버전이 끝에 append 되어, 로그 줄 수가 정확히 1줄만 늘어야 한다
+        self.assertEqual(len(lines_after), line_count_before + 1)
+        self.assertIn('"amount": 1000', lines_after[line_count_before - 1])  # update 직전 마지막 줄 = 옛 버전
+        self.assertIn('"amount": 2000', lines_after[line_count_before])  # 새로 append 된 줄 = 새 버전
         self.assertEqual(idx_size_before, idx_size_after)  # 슬롯 개수는 안 늘어남(제자리 덮어쓰기)
 
         code, out, _ = self.run_cli("list")
-        self.assertIn("2,000", out)
-        self.assertNotIn("1,000", out)  # 조회는 항상 최신 버전만 보여줘야 함
+        row = next(line for line in out.splitlines() if f"{tx_id} " in line)
+        self.assertIn("2,000", row)
+        self.assertNotIn("1,000", row)  # 조회는 항상 최신 버전만 보여줘야 함
 
     # 기능: 저장 원자성(transactions) — delete 는 인덱스 슬롯만 초기화할 뿐
     # transactions.jsonl 로그 파일 자체는 전혀 건드리지 않는지 검증
     def test_153_delete_only_clears_index_slot_log_untouched(self) -> None:
         self.run_cli("category", "add", "--name", "식비")
-        self.run_cli("add", "--date", "2024-01-01", "--type", "expense", "--category", "식비", "--amount", "1000")
+        _, add_out, _ = self.run_cli(
+            "add", "--date", "2024-01-01", "--type", "expense", "--category", "식비", "--amount", "1000"
+        )
+        tx_id = self._extract_id(add_out)
 
         log_path = self.data_dir / "transactions.jsonl"
         log_size_before = log_path.stat().st_size
 
-        self.run_cli("delete", "--id", "TX-1", "--yes")
+        self.run_cli("delete", "--id", tx_id, "--yes")
 
         log_size_after = log_path.stat().st_size
         self.assertEqual(log_size_before, log_size_after)  # delete 는 로그 파일을 건드리지 않음
 
         code, out, _ = self.run_cli("list")
-        self.assertNotIn("TX-1", out)
+        self.assertNotIn(f"{tx_id} ", out)
 
 
 if __name__ == "__main__":
