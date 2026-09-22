@@ -43,11 +43,12 @@ python -m unittest tests.test_requirement_checklist -v
 from __future__ import annotations
 
 import io
+import itertools
 import re
 import sys
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Iterable, TextIO
@@ -82,6 +83,10 @@ class RequirementChecklistTestCase(unittest.TestCase):
     _DATA_ROOT = Path(__file__).resolve().parent / "data"
     data_dir = _DATA_ROOT
     _tmp = SimpleNamespace(name=str(_DATA_ROOT))
+    # _seed_transactions 가 호출될 때마다 이어지는 날짜를 쓰도록 하는 공용 커서.
+    # 클래스 레벨(모든 테스트가 공유)이라, 여러 테스트가 각자 _seed_transactions 를
+    # 호출해도 같은 날짜+금액 조합이 겹쳐 쌓이지 않는다.
+    _seed_day_counter = itertools.count(1)
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -338,12 +343,19 @@ class RequirementChecklistTestCase(unittest.TestCase):
     # 02x: 거래 목록 (list) — --limit/--all, 최신순, 스트리밍, 빈 목록
     # ==================================================================
     def _seed_transactions(self, count: int, *, category: str = "식비") -> list[int]:
-        """거래 count 건을 등록하고, 실제로 발급된 id 들을 등록 순서대로 돌려준다."""
+        """거래 count 건을 등록하고, 실제로 발급된 id 들을 등록 순서대로 돌려준다.
+
+        여러 테스트가 이 메서드를 반복 호출해도 _seed_day_counter 덕분에 날짜가
+        계속 이어지므로(2024-01-01, 02, 03, ...), 서로 다른 호출이 같은
+        날짜+금액 조합을 다시 만들어 데이터가 겹쳐 쌓이지 않는다.
+        """
         ids: list[int] = []
-        for day in range(1, count + 1):
+        for _ in range(count):
+            offset = next(self._seed_day_counter)
+            tx_date = datetime(2024, 1, 1) + timedelta(days=offset - 1)
             _, out, _ = self.run_cli(
-                "add", "--date", f"2024-01-{day:02d}", "--type", "expense",
-                "--category", category, "--amount", str(day * 100),
+                "add", "--date", tx_date.strftime("%Y-%m-%d"), "--type", "expense",
+                "--category", category, "--amount", str(offset * 100),
             )
             ids.append(int(self._extract_id(out).split("-")[1]))
         return ids
@@ -369,7 +381,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
 
     # 기능: list — --limit N 옵션으로 출력 건수를 제한할 수 있는지 검증
     def test_021_list_limit_option(self) -> None:
-        ids = self._seed_transactions(5)
+        ids = self._seed_transactions(3)
         code, out, _ = self.run_cli("list", "--limit", "2")
         self.assertEqual(code, 0)
         self.assertIn(f"TX-{ids[-1]}", out)

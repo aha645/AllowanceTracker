@@ -64,11 +64,6 @@ class Transaction:
         """거래가 속한 달 (`YYYY-MM`)."""
         return self.date[:7]
 
-    @property
-    def signed_amount(self) -> int:
-        """수입은 +, 지출은 - 로 부호를 붙인 금액."""
-        return self.amount if self.type == TYPE_INCOME else -self.amount
-
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
