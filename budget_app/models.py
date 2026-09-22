@@ -74,7 +74,7 @@ class Transaction:
 
     def to_json(self) -> str:
         """저장용 JSON 한 줄(개행 없음)."""
-        return json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True)
+        return json.dumps(self.to_dict(), ensure_ascii=False)
 
     def replace_fields(self, **changes: Any) -> "Transaction":
         """지정한 필드만 바꾼 새 Transaction 을 돌려준다(미지정 필드는 기존 값 유지)."""
