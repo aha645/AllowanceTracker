@@ -4,14 +4,14 @@
 예산 사용률을 확인하며, CSV 로 주고받을 수 있습니다.
 
 - 요구사항 원문: [`doc/request.md`](doc/request.md)
-- Python **3.10 이상** (개발·검증 환경: 3.12) / 외부 의존성 없음
+- Python **3.10 이상** / 외부 의존성 없음
 
 ---
 
 ## 1. 실행 방법
 
 ```bash
-git clone <repo> && cd AllowanceTracker
+git clone https://github.com/aha645/AllowanceTracker.git && cd AllowanceTracker
 python -m budget_app --help              # 전체 도움말
 python -m budget_app <command> --help    # 서브커맨드별 도움말
 ```
@@ -23,145 +23,6 @@ python -m budget_app <command> --help    # 서브커맨드별 도움말
 python -m budget_app --data-dir ~/my-budget list
 python -m budget_app --verbose list      # 실행 로그/시간 측정 출력(디버그용)
 ```
-
-### 테스트 실행
-
-외부 라이브러리 없이 표준 `unittest`로 작성되어 있고, 테스트 파일은 **`tests/test_requirement_checklist.py` 하나**입니다(총 51개).
-`doc/request.md` 의 9개 기능(add → list → search → summary → budget → category → update → delete →
-import/export)을 요구사항 순서대로 **하나의 시나리오로 이어서** 필수 항목만 검증하고, 이어서 공통 관심사와
-보너스를 검증합니다.
-
-| 번호 | 검증 대상 |
-|---|---|
-| 00x~09x | 사전 준비 + 9개 기능 (앞 단계에서 만든 거래 5건을 뒤 단계가 이어받아 사용) |
-| 10x | 데코레이터 (`--verbose` 로그/시간 측정, 함수 메타데이터 보존) |
-| 11x | 종료 코드 0 / 1(원인+힌트, 스택트레이스 없음) / 130(Ctrl+C) |
-| 12x | 표 포맷 (구분선, 부호, 천 단위 구분, 예산 막대) |
-| 13x | 저장 원자성 (임시파일 교체 실패 시 원본 보존, 거래 로그 append 전용 + 인덱스 제자리 갱신) |
-| 14x · 15x | 보너스: 백업, 반복 내역 |
-| 16x | 날짜 인덱스 (옛 날짜 거래/import 여도 거래일자 최신순, `--limit` 만큼만 읽기, `compact`/인덱스 삭제 후 복구) |
-
-CLI를 블랙박스로 호출(`main(argv)`)하고 출력 문자열과 저장 파일만으로 판단합니다. 모든 테스트가
-`tests/data` 폴더 하나를 공유하며 번호 순서대로 데이터를 이어받습니다. 데이터는 **`test_000_reset_data`
-에서만 지웁니다**(수동 초기화).
-
-- **파일 전체 실행**: 000 이 먼저 초기화하므로 몇 번을 다시 실행해도 같은 결과입니다. 끝난 뒤 `tests/data`에 시나리오 결과가 남습니다.
-- **개별 테스트 실행**: 직전 실행이 남긴 데이터 위에서 동작합니다. 처음부터 다시 하려면 `test_000_reset_data` →
-  `test_002_prepare_default_categories`(기본 카테고리 사전 등록) → `test_010`, `test_011`, `test_013`(거래 등록) 순서로
-  실행해 데이터를 준비한 뒤 원하는 테스트를 실행하세요. 전체 실행이 끝난 직후의 데이터는 시나리오 마지막 상태
-  (수정/삭제가 반영된 상태)라서 중간 단계 테스트(list, search, summary 등)는 실패할 수 있습니다.
-
-```bash
-# 전체 테스트 실행
-python -m unittest discover -s tests -v
-
-# 같은 의미 (파일 하나만 지정)
-python -m unittest tests.test_requirement_checklist -v
-
-# 파일을 직접 실행 (테스트 파일 상단의 sys.path 보정 코드 덕분에 이 방식도 동작함)
-python tests/test_requirement_checklist.py -v
-```
-
-### VSCode 테스트 탭(비커 아이콘) 활성화하기
-
-새 컴퓨터에서 이 프로젝트를 받아 VSCode 테스트 탭까지 쓸 수 있게 만드는 전체 과정을 **1단계(환경 구축) → 2단계(VSCode에서
-테스트 실행)** 순서로 정리하면 다음과 같습니다.
-
-> 참고: `uv venv`로 만드는 가상환경(`.venv`)은 프로젝트 폴더 **안에** 있어야 하는데,
-> `git clone`은 대상 폴더가 완전히 비어 있어야만 동작합니다(`.venv`가 먼저 들어있으면
-> `fatal: 대상 경로가 이미 있고 빈 디렉터리가 아닙니다` 로 실패). 그래서 "가상환경
-> 만들기"는 실제로는 **프로젝트를 받은 직후**에 수행합니다. `uv` 설치만 컴퓨터에 한 번
-> 해두면 되는 완전히 독립적인 작업이라 1단계에 그대로 둡니다.
-
-#### 1단계 — 환경 구축 (컴퓨터 하나당 최초 1회)
-
-```bash
-# uv 설치 (파이썬 패키지/가상환경 관리 도구)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-설치 스크립트가 마지막에 PATH 설정 방법을 안내합니다(셸 설정 파일에 한 줄 추가
-하라는 안내가 보통 나옵니다). 안내대로 반영하거나, 간단히 **새 터미널을 하나
-열어서** 아래 명령으로 설치가 됐는지 확인하고 다음 단계로 넘어갑니다.
-
-```bash
-uv --version
-```
-
-#### 2단계 — 프로젝트 받고 VSCode에서 테스트 실행
-
-```bash
-# 1) GitHub 에서 프로젝트 받기
-git clone https://github.com/aha645/AllowanceTracker.git
-cd AllowanceTracker
-
-# 2) 프로젝트 전용 가상환경 생성
-#    (dataclass(slots=True) 등 3.10+ 문법을 쓰므로 3.10 이상 지정)
-uv venv .venv --python 3.10
-
-# 3) 가상환경 활성화 — 이후 이 터미널의 python/pip/uv 는 전부 이 .venv 를 가리킴
-source .venv/bin/activate
-
-# 4) 활성화된 이 콘솔에서 VSCode 열기 (현재 폴더를 워크스페이스로 오픈)
-code .
-```
-
-VSCode가 열리면 아래 순서로 테스트 탭을 활성화합니다.
-
-1. **`.vscode/settings.json` 확인** — 아래 내용으로 이 저장소에 포함되어 있어야
-   정상입니다(관리자가 `git push` 해 두었다는 전제. 혹시 클론한 저장소에 이 파일이
-   없다면 아래 내용 그대로 `.vscode/settings.json` 을 새로 만들면 됩니다):
-   ```jsonc
-   {
-       "python.testing.unittestEnabled": true,
-       "python.testing.pytestEnabled": false,
-       "python.testing.unittestArgs": [
-           "-v",
-           "-s", "tests",
-           "-p", "test_*.py"
-       ]
-   }
-   ```
-   | 키 | 의미 |
-   |---|---|
-   | `python.testing.unittestEnabled` | 표준 `unittest` 방식으로 테스트를 찾으라는 뜻 — 이걸 켜야 비커 탭이 켜짐 |
-   | `python.testing.pytestEnabled` | 이 프로젝트는 pytest(외부 패키지)를 쓰지 않으므로 명시적으로 꺼서 혼선 방지 |
-   | `python.testing.unittestArgs` | `-s tests`(탐색 폴더) + `-p test_*.py`(파일 패턴) — `python -m unittest discover -s tests -p test_*.py` 와 동일한 조건 |
-
-2. **인터프리터를 방금 만든 `.venv`(3.10)로 직접 선택** — `Cmd+Shift+P` → **`Python: Select Interpreter`** → `./.venv/bin/python` (또는 `.venv (Python 3.10)`) 선택.
-   VSCode 파이썬 확장이 macOS 시스템 기본 Python(주로 3.9, Command Line Tools 번들)을
-   자동으로 잡는 경우가 있는데, 이 프로젝트는 `budget_app/models.py`의
-   `@dataclass(slots=True)`처럼 **Python 3.10부터** 지원하는 문법을 쓰므로, 3.9가
-   선택된 상태에서는 테스트 탐색 자체가 아래 에러로 실패합니다. 그래서 이 선택을
-   건너뛸 수 없습니다.
-   ```
-   TypeError: dataclass() got an unexpected keyword argument 'slots'
-   ```
-   `.vscode/settings.json`에 `python.defaultInterpreterPath`로 특정 경로를 하드코딩
-   하지 않는 이유는, 그 경로가 사람·컴퓨터마다 다르기 때문입니다 — 대신 매번 이 선택
-   UI로 지정합니다.
-
-3. **좌측 액티비티바의 테스트(비커) 아이콘 클릭** → `tests/` 아래 `test_requirement_checklist.py` 가 트리로
-   나타나면 성공. 각 테스트 옆 ▶(실행) 또는 🐛(디버그) 버튼으로 개별 실행/디버깅이
-   가능합니다.
-
-**문제가 안 풀릴 때 체크리스트**
-
-| 증상 | 조치 |
-|---|---|
-| 테스트 탭에 아무것도 안 뜸 | 테스트 탭 새로고침(↻) 버튼, 또는 `Cmd+Shift+P` → `Test: Refresh Tests` |
-| 코드를 고쳤는데 옛날 테스트 이름이 그대로 보임 | 위와 동일 + 그래도 안 되면 `Cmd+Shift+P` → `Developer: Reload Window` |
-| `dataclass() got an unexpected keyword argument 'slots'` 에러 | 3.9가 선택된 상태 → `Python: Select Interpreter` 로 `.venv`(3.10) 재선택 |
-| 원인을 못 찾겠을 때 | 하단 `Output` 패널 → 드롭다운에서 `Python` 또는 `Python Test Log` 선택해서 실제 에러 확인 |
-
-`.venv/`는 `.gitignore`에 포함되어 있어 커밋되지 않습니다.
-
-**VSCode 디버거에서 CLI 자체를 실행하기**: `.vscode/launch.json` 에 `python -m budget_app`
-을 인자와 함께 실행하는 디버그 설정이 준비되어 있습니다. "budget_app: 인자 직접 입력" 설정을
-고르면 F5 를 누를 때마다 입력창이 뜨고, 거기에 `list --limit 5` 처럼 원하는 인자를 쳐서
-`cmd_add`/`cmd_summary` 등에 브레이크포인트를 걸고 디버깅할 수 있습니다.
-(`add` 처럼 `input()` 을 쓰는 대화형 명령은 `console: integratedTerminal` 설정 덕분에
-VSCode 통합 터미널에서 정상적으로 키보드 입력을 받습니다.)
 
 ---
 
@@ -263,178 +124,119 @@ $ python -m budget_app summary --month 2024-02
 
 ---
 
-## 3-1. 직접 따라 해보기 (테스트 시나리오와 동일)
+## 3-1. 따라 해보기
 
-`tests/test_requirement_checklist.py` 가 자동으로 실행하는 시나리오를 손으로 그대로 입력해 볼 수 있도록
-정리했습니다. 위에서 아래로 **순서대로** 입력하면 앞 단계에서 만든 데이터를 뒤 단계가 이어받습니다
-(`TX-1`~`TX-5` 라는 id 도 이 순서대로 만들었을 때 기준입니다).
-
-### 준비
-
-`--data-dir` 를 따로 주지 않으므로 데이터는 기본 저장 폴더 `./data` 에 자동으로 만들어집니다
-(첫 실행 시 폴더와 파일이 자동 생성). 처음부터 시작하려면(= `test_000_reset_data`) 기존 데이터 폴더를 지웁니다.
+아래 명령을 **위에서 아래로 순서대로** 입력하면 앞 단계에서 만든 데이터를 뒤 단계가 이어받습니다
+(`TX-1`~`TX-5` 라는 id 도 이 순서대로 만들었을 때 기준입니다). 각 단계의 `# 확인:` 은 그 명령으로 무엇을 확인하는지 설명합니다.
+공백이 들어간 값은 따옴표로 감쌉니다. CSV 파일은 현재 폴더에 만듭니다.
 
 ```bash
-rm -rf ./data      # ⚠ 지금까지 입력한 실제 데이터가 모두 사라집니다. 지워도 되는 상태에서만 실행하세요.
+rm -rf ./data      # 처음부터 시작 (⚠ 기존 거래 데이터가 모두 삭제됩니다)
 ```
 
-> 메모처럼 **공백이 들어간 값은 따옴표**로 감싸세요(예: `--memo "1월 급여"`). import/export 용 CSV 파일은
-> 데이터 폴더 밖(현재 폴더)에 만듭니다. 아래 명령은 모두 프로젝트 폴더에서 `python -m budget_app ...` 로 입력합니다.
-
-### 1) 사전 준비 — 카테고리 없이 add 는 막히고, 카테고리를 등록하면 된다 (00x)
+### 1) 사전 준비
 
 ```bash
-python -m budget_app add                                  # [오류] 등록된 카테고리가 없습니다. + [힌트] → 종료 코드 1
-python -m budget_app category add --name 식비             # [저장 완료] 카테고리 '식비' 추가
+python -m budget_app add                      # 확인: 카테고리가 하나도 없으면 add 가 차단된다 ([오류] + [힌트], 종료 코드 1)
+python -m budget_app category add --name 식비   # 확인: 카테고리 등록
 python -m budget_app category add --name 교통
 python -m budget_app category add --name 월급
 python -m budget_app category add --name 월세
 ```
 
-### 2) add — 대화형 1건 + 옵션 3건 (01x)
-
-대화형: `python -m budget_app add` 를 실행하고 프롬프트에 아래 값을 차례로 입력합니다.
+### 2) add — 거래 추가
 
 ```bash
-python -m budget_app add
+python -m budget_app add     # 확인: 대화형 등록. 입력: 2024-01-05 → expense → 식비 → 12000 → 점심 → 외식  (id=TX-1 출력)
+python -m budget_app add --date 2024-01-10 --type expense --category 교통 --amount 20000 --memo "지하철"      # 확인: 옵션 방식 등록 (TX-2)
+python -m budget_app add --date 2024-01-25 --type income  --category 월급 --amount 3000000 --memo "1월 급여"  # TX-3
+python -m budget_app add --date 2024-01-31 --type expense --category 월세 --amount 500000 --memo "1월 월세"   # TX-4
 ```
-| 프롬프트 | 입력 |
-|---|---|
-| 날짜 | `2024-01-05` |
-| 타입 | `expense` |
-| 카테고리 (번호 또는 이름) | `식비` |
-| 금액 | `12000` |
-| 메모 | `점심` |
-| 태그 | `외식` |
 
-→ `[저장 완료] id=TX-1`
-
-옵션 방식(프롬프트 없이 한 줄):
+잘못된 값은 저장되지 않고 오류가 나는지 확인합니다.
 
 ```bash
-python -m budget_app add --date 2024-01-10 --type expense --category 교통 --amount 20000 --memo "지하철"      # id=TX-2
-python -m budget_app add --date 2024-01-25 --type income  --category 월급 --amount 3000000 --memo "1월 급여"   # id=TX-3
-python -m budget_app add --date 2024-01-31 --type expense --category 월세 --amount 500000 --memo "1월 월세"    # id=TX-4
+python -m budget_app add --date 2024-13-40 --type expense --category 식비 --amount 1000        # 날짜 형식 오류 (종료 코드 1)
+python -m budget_app add --date 2024-01-01 --type expense --category 식비 --amount -500        # 음수 금액 (1)
+python -m budget_app add --date 2024-01-01 --type expense --category 식비 --amount 0           # 0 금액 (1)
+python -m budget_app add --date 2024-01-01 --type transfer --category 식비 --amount 1000       # 허용되지 않은 type (2)
+python -m budget_app add --date 2024-01-01 --type expense --category 없는카테고리 --amount 1000  # 미등록 카테고리 (1)
 ```
-
-**잘못된 입력은 저장되지 않고 오류가 나는지 확인** (모두 거래가 늘지 않아야 함):
 
 ```bash
-python -m budget_app add --date 2024-13-40 --type expense --category 식비 --amount 1000        # 날짜 형식 오류 → 종료 코드 1
-python -m budget_app add --date 2024-01-01 --type expense --category 식비 --amount -500        # 음수 금액 → 1
-python -m budget_app add --date 2024-01-01 --type expense --category 식비 --amount 0           # 0 금액 → 1
-python -m budget_app add --date 2024-01-01 --type transfer --category 식비 --amount 1000       # 허용되지 않은 type → 종료 코드 2 (argparse)
-python -m budget_app add --date 2024-01-01 --type expense --category 없는카테고리 --amount 1000  # 미등록 카테고리 → 1
+python -m budget_app add     # 확인: 대화형에서는 잘못 입력해도 다시 묻는다
+                             # 입력: 2024-13-40(오류) → 2024-03-01 → expense → 없는것(오류) → 교통 → -1(오류) → 1500 → (엔터) → (엔터)  (TX-5)
 ```
 
-**대화형에서는 잘못 입력해도 다시 묻는지 확인** — 아래 순서로 입력합니다. 오류 메시지가 3번 나오고 마지막에
-저장됩니다(`id=TX-5`). 이 거래(2024-03, 교통, 1,500원)는 이후 단계에서 "가장 최근 거래"로 쓰입니다.
-
-| 프롬프트 | 입력 | 결과 |
-|---|---|---|
-| 날짜 | `2024-13-40` | 오류 → 다시 묻는다 |
-| 날짜 | `2024-03-01` | |
-| 타입 | `expense` | |
-| 카테고리 | `없는것` | 오류 → 다시 묻는다 |
-| 카테고리 | `교통` | |
-| 금액 | `-1` | 오류 → 다시 묻는다 |
-| 금액 | `1500` | |
-| 메모 / 태그 | (엔터, 엔터) | `[저장 완료] id=TX-5` |
-
-### 3) list — 최신순, `--limit`, `--limit` 과 `--all` 은 함께 못 쓴다 (02x)
+### 3) list — 최신순 목록
 
 ```bash
-python -m budget_app list                    # 5건. TX-5, TX-4, TX-3, TX-2, TX-1 순서(나중에 등록한 것이 위)
-python -m budget_app list --limit 2          # 최근 2건(TX-5, TX-4)만 + "[완료] 2건 출력 / 전체 5건"
-python -m budget_app list --limit 5 --all    # error: argument --all: not allowed with argument --limit → 종료 코드 2
+python -m budget_app list                  # 확인: 거래일자 최신순 (TX-5, TX-4, TX-3, TX-2, TX-1)
+python -m budget_app list --limit 2        # 확인: 최근 2건만 + "전체 5건"
+python -m budget_app list --limit 5 --all  # 확인: --limit 과 --all 은 함께 쓸 수 없다 (종료 코드 2)
 ```
 
-### 4) search — 조건별 필터, AND 결합, 조건 없음은 오류 (03x)
-
-```bash
-python -m budget_app search --from 2024-01-10 --to 2024-01-25     # 기간 → TX-3, TX-2
-python -m budget_app search --category 식비                        # 카테고리 → TX-1
-python -m budget_app search --type income                          # 타입 → TX-3
-python -m budget_app search --q 지하철                             # 메모 키워드 → TX-2
-python -m budget_app search --tag 외식                             # 태그 → TX-1
-python -m budget_app search --type expense --from 2024-01-01 --to 2024-01-31 --category 월세   # AND 결합 → TX-4 만
-python -m budget_app search                                        # [오류] 검색 조건이 하나도 지정되지 않았습니다. → 1
-```
-
-### 5) summary — 수입/지출/잔액, TOP N, 데이터 없는 달 (04x)
+### 4) search — 조건 검색
 
 ```bash
-python -m budget_app summary --month 2024-01 --top 2
+python -m budget_app search --from 2024-01-10 --to 2024-01-25   # 확인: 기간 → TX-3, TX-2
+python -m budget_app search --category 식비                      # 확인: 카테고리 → TX-1
+python -m budget_app search --type income                        # 확인: 타입 → TX-3
+python -m budget_app search --q 지하철                           # 확인: 메모 키워드 → TX-2
+python -m budget_app search --tag 외식                           # 확인: 태그 → TX-1
+python -m budget_app search --type expense --from 2024-01-01 --to 2024-01-31 --category 월세   # 확인: 조건 AND 결합 → TX-4
+python -m budget_app search                                      # 확인: 조건이 없으면 오류 (종료 코드 1)
 ```
-```
-[2024-01 요약]
-  총 수입  3,000,000원
-  총 지출  532,000원            ← 12,000 + 20,000 + 500,000
-  잔액     2,468,000원  (거래 4건)
 
-[카테고리별 지출 TOP 2]        ← 큰 순서: 월세, 교통 (식비는 TOP 2 밖이라 나오지 않음)
-```
+### 5) summary — 월별 요약
+
 ```bash
-python -m budget_app summary --month 2023-12     # "데이터 없음" 이 분명하게 출력된다
+python -m budget_app summary --month 2024-01 --top 2   # 확인: 수입 3,000,000 / 지출 532,000 / 잔액 2,468,000, 지출 TOP 2 (월세, 교통)
+python -m budget_app summary --month 2023-12           # 확인: 거래가 없는 달은 "데이터 없음"
 ```
 
-### 6) budget — 설정 → 사용률 → 덮어쓰기 → 초과 경고 (05x)
+### 6) budget — 예산
 
 ```bash
 python -m budget_app budget set --month 2024-01 --amount 600000
-python -m budget_app summary --month 2024-01        # 사용 532,000원 (88.7%) [##################..] / 잔여 68,000원 — 경고 없음
-python -m budget_app budget set --month 2024-01 --amount 500000    # "기존 예산 600,000원을 덮어썼습니다."
-python -m budget_app summary --month 2024-01        # 사용 532,000원 (106.4%) / [경고] 예산을 32,000원 초과했습니다!
-python -m budget_app budget set --month 2024-01 --amount 0         # [오류] 금액은 0보다 커야 합니다 → 1
+python -m budget_app summary --month 2024-01   # 확인: 예산 사용률 88.7%, 경고 없음
+python -m budget_app budget set --month 2024-01 --amount 500000   # 확인: 같은 달은 덮어쓰기
+python -m budget_app summary --month 2024-01   # 확인: 사용률 106.4% + [경고] 예산 32,000원 초과
+python -m budget_app budget set --month 2024-01 --amount 0        # 확인: 0 이하 금액은 오류 (종료 코드 1)
 ```
 
-### 7) category — 중복 차단, 목록, 사용 중인 카테고리는 삭제 불가 (06x)
+### 7) category — 카테고리 관리
 
 ```bash
-python -m budget_app category add --name 여가       # 저장 완료
-python -m budget_app category add --name 식비       # [오류] ... 이미 등록되어 있습니다. → 1
-python -m budget_app category list                  # 5개(식비, 교통, 월급, 월세, 여가)
-python -m budget_app category remove --name 식비    # [오류] ... 사용 중이라 삭제할 수 없습니다 → 1  (거래 TX-1 이 쓰는 중)
-python -m budget_app category remove --name 여가    # [삭제 완료] (아무 거래도 안 쓰므로 삭제됨)
-python -m budget_app category remove --name 없는카테고리   # [오류] 찾을 수 없습니다 → 1
+python -m budget_app category add --name 여가      # 확인: 등록
+python -m budget_app category add --name 식비      # 확인: 이미 있는 이름은 오류
+python -m budget_app category list                 # 확인: 5개
+python -m budget_app category remove --name 식비   # 확인: 사용 중인 카테고리는 삭제할 수 없다
+python -m budget_app category remove --name 여가   # 확인: 사용하지 않는 카테고리는 삭제된다
+python -m budget_app category remove --name 없는카테고리   # 확인: 없는 카테고리는 오류
 ```
 
-### 8) update — 대화형 수정 (07x)
-
-`TX-1`(식비 12,000원, 메모 "점심", 태그 "외식")을 수정합니다. 현재 값이 먼저 표시되고, **엔터 = 기존 값 유지,
-`-` = 메모/태그 비우기** 입니다.
+### 8) update — 거래 수정 (대화형)
 
 ```bash
-python -m budget_app update --id TX-1
+python -m budget_app update --id TX-1   # 확인: 현재 값을 보여주고 바꿀 항목만 입력 (엔터=유지, -=메모/태그 비우기)
+                                        # 입력: (엔터) → (엔터) → (엔터) → 15000 → - → (엔터)   (금액만 15,000 으로, 메모는 비움)
+python -m budget_app search --category 식비   # 확인: 금액 15,000, 메모 없음, 태그 "외식" 유지
+python -m budget_app summary --month 2024-01  # 확인: 총 지출이 535,000 으로 반영
+python -m budget_app update --id TX-999999    # 확인: 없는 id 는 입력 전에 오류 (종료 코드 1)
 ```
-| 프롬프트 | 입력 | 의미 |
-|---|---|---|
-| 날짜 / 타입 / 카테고리 | (엔터 ×3) | 유지 |
-| 금액 `[12000]` | `15000` | 12,000 → 15,000 |
-| 메모 `[점심]` | `-` | 메모 비움 |
-| 태그 `[외식]` | (엔터) | 유지 |
 
-→ `[수정 완료] id=TX-1` + 변경된 필드 표(`amount`, `memo`)
+### 9) delete — 거래 삭제
 
 ```bash
-python -m budget_app search --category 식비         # 금액 -15,000, 메모 없음, 태그 "외식" 유지
-python -m budget_app summary --month 2024-01        # 총 지출 535,000원 (15,000 + 20,000 + 500,000)
-python -m budget_app update --id TX-999999          # [오류] TX-999999 거래를 찾을 수 없습니다. → 1 (입력 프롬프트로 가지 않음)
+python -m budget_app delete --id TX-2 --yes   # 확인: 삭제 (--yes 가 없으면 y/N 으로 한 번 더 묻는다)
+python -m budget_app list                     # 확인: TX-2 가 목록에서 사라진다
+python -m budget_app summary --month 2024-01  # 확인: 총 지출 515,000 (교통 20,000 제외)
+python -m budget_app delete --id TX-2 --yes   # 확인: 이미 삭제된 id 는 오류
+python -m budget_app delete --id TX-999999 --yes   # 확인: 없는 id 는 오류
 ```
 
-### 9) delete — 삭제가 list/summary 에 반영된다 (08x)
-
-```bash
-python -m budget_app delete --id TX-2 --yes         # [삭제 완료] id=TX-2 (2024-01-10 교통 20,000원)   (--yes 없으면 y/N 확인)
-python -m budget_app list                           # TX-2 가 사라진다(4건)
-python -m budget_app summary --month 2024-01        # 총 지출 515,000원 (교통 20,000 제외)
-python -m budget_app delete --id TX-2 --yes         # [오류] 거래를 찾을 수 없습니다 → 1 (이미 삭제됨)
-python -m budget_app delete --id TX-999999 --yes    # [오류] → 1 (없는 id)
-```
-
-### 10) import / export (09x)
-
-**import** — 현재 폴더에 `import.csv` 를 만듭니다(4행 중 2행만 유효):
+### 10) import / export — CSV
 
 ```bash
 cat > import.csv <<'CSV'
@@ -445,89 +247,52 @@ date,type,category,amount,memo,tags
 2024-02-11,expense,식비,-100,,
 CSV
 
-python -m budget_app import --from import.csv
-```
-```
-[완료] import.csv → imported=2, skipped=2
-
-[건너뛴 행]
-행  사유
- 4  등록되지 않은 카테고리입니다: '없는카테고리'
- 5  금액은 0보다 커야 합니다: -100
-```
-```bash
-python -m budget_app summary --month 2024-02        # 총 수입 3,000,000원 / 총 지출 8,000원 (가져온 데이터가 반영됨)
+python -m budget_app import --from import.csv    # 확인: imported=2, skipped=2 (미등록 카테고리/음수 금액 행은 사유와 함께 건너뜀)
+python -m budget_app summary --month 2024-02     # 확인: 가져온 데이터가 반영 (수입 3,000,000 / 지출 8,000)
+python -m budget_app export --out export_2024_02.csv --month 2024-02                  # 확인: 월 단위 내보내기 (2 records)
+cat export_2024_02.csv                           # 확인: 헤더 date,type,category,amount,memo,tags / 쉼표가 든 메모도 그대로 보존
+python -m budget_app export --out export_range.csv --from 2024-01-01 --to 2024-01-31 # 확인: 기간 내보내기 (3 records, 수정 반영, 삭제한 교통 제외)
+python -m budget_app export --out none.csv       # 확인: --month 또는 --from/--to 가 없으면 오류 (종료 코드 1)
+ls data                                          # 확인: 데이터가 파일로 저장되어 있다 (transactions / categories / budgets 등)
 ```
 
-**export** — 월 단위 / 기간 단위로 내보내고, 조건이 없으면 거부됩니다.
+### 11) 로그 · 종료 코드 · 표 형식
 
 ```bash
-python -m budget_app export --out export_2024_02.csv --month 2024-02                    # [완료] ... (2 records)
-cat export_2024_02.csv             # 헤더 date,type,category,amount,memo,tags + 2행. "점심, 회사 근처" 처럼 쉼표가 든 메모도 그대로
-python -m budget_app export --out export_range.csv --from 2024-01-01 --to 2024-01-31    # (3 records) ← 식비(15000, 수정 반영), 월급, 월세. 삭제한 교통은 없음
-python -m budget_app export --out none.csv          # [오류] 내보내기 조건이 없습니다. → 1
-ls data                       # budgets.jsonl categories.jsonl transactions.jsonl (+ transactions.idx, transactions.date.idx, recurring.jsonl) 영구 저장 확인
+python -m budget_app --verbose list   # 확인: --verbose 일 때만 [log] 시작/종료/실행 시간이 출력된다
+python -m budget_app list; echo $?    # 확인: 정상은 종료 코드 0 / 표 헤더·구분선, 수입 +3,000,000 · 지출 -500,000 (천 단위 구분)
+python -m budget_app delete --id TX-999999 --yes; echo $?   # 확인: 오류는 [오류] + [힌트] (스택트레이스 없음), 종료 코드 1
+python -m budget_app add; echo $?     # 확인: 입력 중 Ctrl+C 를 누르면 "[중단]" 과 종료 코드 130
 ```
 
-### 11) 데코레이터 · 종료 코드 · 표 포맷 (10x ~ 12x)
+### 12) 저장 파일 갱신 방식
 
 ```bash
-python -m budget_app --verbose list      # 표 아래에 [log] -> cmd_list 시작 / [log] cmd_list 실행 시간 ...ms / [log] <- cmd_list 종료 (stderr)
-python -m budget_app list                # --verbose 가 없으면 [log] 줄이 나오지 않는다
+wc -l data/transactions.jsonl; wc -c data/transactions.idx   # 현재 줄 수와 idx 크기를 기록 (예: 8줄, 112바이트)
+python -m budget_app update --id TX-1                        # 입력: 금액만 16000, 나머지는 엔터
+wc -l data/transactions.jsonl; wc -c data/transactions.idx   # 확인: 수정본이 끝에 추가되어 줄 수 +1, idx 크기는 그대로
+python -m budget_app delete --id TX-5 --yes
+wc -l data/transactions.jsonl; wc -c data/transactions.idx   # 확인: 삭제는 줄 수·idx 크기를 바꾸지 않는다
 ```
 
-종료 코드는 직전 명령 직후 `echo $?` 로 확인합니다.
+### 13) 백업
 
 ```bash
-python -m budget_app list; echo $?                          # 0   정상
-python -m budget_app delete --id TX-999999 --yes; echo $?   # 1   [오류] + [힌트] 가 나오고 Traceback(스택트레이스)은 없다
-python -m budget_app add                                    # 프롬프트에서 Ctrl+C 를 누른다 → "[중단] 사용자가 입력을 취소했습니다."
-echo $?                                                     # 130
+python -m budget_app backup      # 확인: data/backup/<날짜_시각>/ 폴더가 만들어지고 데이터 파일이 복사된다
+ls data/backup/*
 ```
 
-표 포맷 확인: `python -m budget_app list` 결과에서 ① 헤더 아래 구분선(`-  ----  ---`) ② 수입 `+3,000,000` / 지출 `-500,000` 부호와 천 단위 구분
-③ `python -m budget_app summary --month 2024-01` 의 예산 막대 `[####################]` 를 눈으로 확인합니다.
-
-### 12) 저장 원자성 — 로그는 덧붙이기만, 인덱스는 제자리 갱신 (13x)
-
-`transactions.jsonl` 의 줄 수와 `transactions.idx` 의 크기를 기록해 두고 수정/삭제 전후를 비교합니다.
+### 14) 반복 내역
 
 ```bash
-wc -l data/transactions.jsonl; wc -c data/transactions.idx     # 예: 8줄, 112바이트
-
-python -m budget_app update --id TX-1               # 금액만 16000 으로 바꾼다(나머지는 엔터)
-wc -l data/transactions.jsonl; wc -c data/transactions.idx     # 줄 수 +1 (새 버전이 끝에 append), idx 크기는 그대로
-tail -2 data/transactions.jsonl     # 맨 끝줄이 TX-1 의 새 버전(amount 16000), 바로 앞에 다른 거래 줄 — 옛 버전은 위쪽에 남아 있음
-
-python -m budget_app delete --id TX-5 --yes         # delete 는 로그를 건드리지 않는다
-wc -l data/transactions.jsonl; wc -c data/transactions.idx     # 줄 수·idx 크기 모두 그대로 (슬롯만 0 으로 초기화)
+python -m budget_app recurring add --day 31 --type income --category 월급 --amount 3000000 --memo "월급(반복)"   # 확인: 매월 31일 규칙 등록 (RC-1)
+python -m budget_app recurring list                        # 확인: 규칙 목록
+python -m budget_app recurring apply --month 2024-02       # 확인: 2024-02-29 로 거래 생성 (31일이 없는 달은 말일로 보정)
+python -m budget_app recurring apply --month 2024-02       # 확인: 같은 달 재실행은 건너뜀 (중복 생성 방지)
+python -m budget_app recurring remove --id RC-1            # 확인: 규칙 삭제
 ```
 
-> 카테고리/예산 파일이 "임시 파일 + `os.replace`" 로 안전하게 교체되는지(디스크 오류를 흉내 내 원본이 보존되는지)는
-> 손으로 재현하기 어려워 자동 테스트(`test_130_...`)로만 검증합니다.
-
-### 13) 보너스 — 백업 (14x)
-
-```bash
-python -m budget_app backup                         # [완료] 백업 생성: data/backup/20261005_175830 (날짜_시각) + 복사된 파일 목록
-ls data/backup/*              # 데이터 파일들이 그대로 복사되어 있다
-```
-
-### 14) 보너스 — 반복 내역 (15x)
-
-```bash
-python -m budget_app recurring add --day 31 --type income --category 월급 --amount 3000000 --memo "월급(반복)"   # id=RC-1
-python -m budget_app recurring list                          # 매월 31일 규칙 1개
-python -m budget_app recurring apply --month 2024-02         # 생성 1건 — 날짜가 2024-02-31 이 아니라 윤년 말일 2024-02-29 로 보정된다
-python -m budget_app recurring apply --month 2024-02         # 생성 0건, "이미 적용되어 건너뜀 1건" — 같은 달 중복 생성 방지
-python -m budget_app recurring remove --id RC-1              # 삭제
-python -m budget_app recurring list                          # "등록된 반복 규칙이 없습니다."
-```
-
-### 15) 날짜 인덱스 — 옛 날짜 거래를 넣어도 거래일자 최신순 (16x)
-
-id 는 등록 순서이므로, 나중에 등록한 **옛 날짜** 거래는 "id 는 가장 크지만 거래일자는 가장 오래된" 거래입니다.
-이런 거래가 `list` 맨 위로 올라오지 않고 날짜 위치에 들어가는지 확인합니다(위 단계를 모두 마쳤다면 이 거래는 `TX-9` 가 됩니다).
+### 15) 옛 날짜 거래 추가 — 날짜 인덱스
 
 ```bash
 cat > old.csv <<'CSV'
@@ -535,163 +300,80 @@ date,type,category,amount,memo,tags
 2023-12-15,expense,식비,7000,옛거래,
 CSV
 
-python -m budget_app import --from old.csv        # imported=1, skipped=0
-python -m budget_app list --all                   # TX-9 는 id 가 가장 크지만 날짜(2023-12-15)가 가장 오래돼 맨 아래
-python -m budget_app list --limit 1               # 맨 위는 가장 최신 거래일자의 거래(TX-8, 2024-02-29)
-```
-
-날짜를 바꾸면 새 날짜 위치로 옮겨지고, 옛 날짜 구간에서는 더 나오지 않습니다(중복 출력도 없음).
-
-```bash
-python -m budget_app update --id TX-9              # 날짜만 2024-06-01 로 입력하고 나머지는 엔터
-python -m budget_app list --limit 1                # 이제 TX-9 가 맨 위(가장 최신 날짜)
-python -m budget_app search --from 2023-12-01 --to 2023-12-31   # TX-9 가 나오지 않는다 (조건 오류 아님: 결과 없음)
-```
-
-삭제된 거래는 건너뛰고, `compact` 는 날짜 인덱스를 정리하며, 인덱스 파일은 지워도 자동으로 다시 만들어집니다.
-
-```bash
+python -m budget_app import --from old.csv      # 확인: 옛 날짜 거래를 나중에 가져온다 (id 는 TX-9, 가장 큼)
+python -m budget_app list --all                 # 확인: id 가 가장 커도 날짜가 가장 오래돼서 맨 아래에 나온다
+python -m budget_app update --id TX-9           # 입력: 날짜만 2024-06-01, 나머지는 엔터
+python -m budget_app list --limit 1             # 확인: 날짜를 바꾸니 맨 위(가장 최신)로 올라온다
+python -m budget_app search --from 2023-12-01 --to 2023-12-31   # 확인: 옛 날짜 구간에는 더 나오지 않는다
 python -m budget_app delete --id TX-9 --yes
-python -m budget_app compact
-wc -c data/transactions.date.idx                   # 살아있는 거래 수 × 12 바이트
-python -m budget_app list --all                    # 순서는 그대로
-rm data/transactions.date.idx                      # 인덱스 파일을 일부러 삭제
-python -m budget_app list --limit 3                # 다음 실행에서 자동으로 재생성되어 같은 결과
-ls data                                            # transactions.date.idx 가 다시 생겼다
+python -m budget_app compact                    # 확인: 삭제/수정 찌꺼기를 정리해도 목록 순서는 그대로
+rm data/transactions.date.idx                   # 날짜 인덱스를 일부러 삭제
+python -m budget_app list --limit 3             # 확인: 다음 실행 때 인덱스가 자동으로 다시 만들어지고 같은 결과가 나온다
 ```
 
-실습이 끝나면 `rm -rf ./data import.csv export_*.csv none.csv old.csv` 로 정리하세요(`./data` 에는 실습 데이터만 들어 있어야 합니다).
+실습이 끝나면 `rm -rf ./data import.csv export_*.csv none.csv old.csv` 로 정리합니다.
 
 ---
 
 ## 4. 저장 파일 위치/형식
 
-기본 저장 폴더는 `./data` 이며 파일이 6개로 분리되어 있습니다(요구사항의 필수 3종 `transactions` / `categories` / `budgets` + 인덱스 `transactions.idx`, `transactions.date.idx` + 보너스 `recurring.jsonl`).
+기본 저장 폴더는 `./data` 이며 파일이 6개로 분리되어 있습니다(필수 3종 `transactions` / `categories` / `budgets` + 인덱스 2개 + 보너스 `recurring`).
 
 | 파일 | 역할 | 포맷 | 쓰기 방식 |
 |---|---|---|---|
 | `data/transactions.jsonl` | 거래 원본 데이터 | 텍스트, JSON 1줄 = 레코드 1개 | **append 전용** (수정도 새 버전을 끝에 추가) |
-| `data/transactions.idx` | id → 현재 유효 byte 위치 | 이진, 슬롯당 **16바이트** 고정폭 | 슬롯 단위 in-place 덮어쓰기 |
-| `data/transactions.date.idx` | (거래일자, id) 를 **날짜순으로 정렬**한 보조 인덱스 — 최신순 조회/기간 조회용 | 이진, 항목당 **12바이트** 고정폭 | 평소엔 끝에 append, 옛 날짜 거래는 병합 후 임시파일 + `os.replace` |
+| `data/transactions.idx` | id → 현재 내용이 있는 위치 | 이진, 슬롯당 16바이트 | 슬롯 덮어쓰기 |
+| `data/transactions.date.idx` | (거래일자, id) 날짜순 목록 — 최신순/기간 조회용 | 이진, 항목당 12바이트 | 끝에 추가 또는 병합 후 교체 |
 | `data/categories.jsonl` | 카테고리 목록 | 텍스트 JSONL | 전체 재작성 (임시파일 + `os.replace`) |
 | `data/budgets.jsonl` | 월별 예산 | 텍스트 JSONL | 전체 재작성 (임시파일 + `os.replace`) |
 | `data/recurring.jsonl` | 반복 거래 규칙 (보너스) | 텍스트 JSONL | 전체 재작성 (임시파일 + `os.replace`) |
 
-### 거래 데이터 파일 관리 한눈에 보기
+JSONL 을 쓰는 이유: 메모·태그에 쉼표나 따옴표가 들어가도 안전하고, 한 줄이 한 레코드라 끝에 추가하기 쉽습니다.
+CSV 는 `import`/`export` 에서만 씁니다.
 
-거래는 **세 파일이 역할을 나눠** 관리합니다. 원본은 한 곳에만 있고, 나머지 둘은 "어디에 있는지 / 어떤 순서인지"를 알려주는 색인입니다.
+### 거래 데이터 파일 관리
 
-| 파일 | 한 줄 요약 | 비유 |
-|---|---|---|
-| `transactions.jsonl` | 거래 **내용** 원본. 항상 끝에만 덧붙임(수정 전 내용도 남음) | 일기장 |
-| `transactions.idx` | **id → 현재 내용이 어디에 있는가** (슬롯 N = id N, 삭제는 0) | 쪽수 찾아보기 |
-| `transactions.date.idx` | **(거래일자, id) 날짜순 목록**. 최신순 조회/기간 조회용 | 날짜별 목차 |
+거래는 세 파일이 역할을 나눠 관리합니다.
 
-**"최신"은 `(거래일자, id)` 로 정합니다** — 거래일자가 늦은 것이 최신이고, 같은 날짜면 id 가 큰(나중에 등록한) 것이 최신입니다.
-id 는 등록 순서일 뿐이라 옛 날짜 거래를 나중에 import 해도 id 는 크지만 최신이 되지는 않습니다.
-`list` 는 날짜 목차(`date.idx`)를 **맨 끝부터 거꾸로** 읽고, 항목마다 `idx` 로 위치를 찾아 `jsonl` 에서 그 한 건만 읽다가
-`--limit` 개수가 차면 멈춥니다(전체를 읽지 않음).
+| 파일 | 역할 |
+|---|---|
+| `transactions.jsonl` | 거래 **내용** 원본. 항상 끝에만 덧붙인다(수정 전 내용도 남는다). |
+| `transactions.idx` | **id → 현재 내용의 위치**. 슬롯 N 이 id N 이고, 삭제된 id 는 `(0, 0)`. |
+| `transactions.date.idx` | **(거래일자, id) 날짜순 목록**. 최신순 조회에 쓴다. |
 
-**add / import / update / delete / compact 가 일어나면 각 파일은 이렇게 바뀝니다**
+**최신 거래의 기준은 `(거래일자, id)`** 입니다. 거래일자가 늦은 것이 최신이고, 같은 날짜면 id 가 큰(나중에 등록한) 것이 최신입니다.
+`list` 는 날짜순 목록을 **맨 끝부터 거꾸로** 읽으면서 해당 거래만 `jsonl` 에서 읽고, `--limit` 개수가 차면 멈춥니다(전체를 읽지 않음).
+옛 날짜 거래를 나중에 import 해도 id 는 커지지만 날짜순 목록에서는 제 날짜 위치에 들어가므로 `list` 순서가 어긋나지 않습니다.
 
-| 동작 | `transactions.jsonl` (내용) | `transactions.idx` (id → 위치) | `transactions.date.idx` (날짜순 목차) |
+**동작별로 파일이 바뀌는 방식**
+
+| 동작 | `transactions.jsonl` | `transactions.idx` | `transactions.date.idx` |
 |---|---|---|---|
-| **add** | 끝에 한 줄 추가 | 슬롯 1개 추가 | 날짜가 가장 늦으면 **끝에 추가**, 아니면 제자리에 **끼워 넣기** |
-| **import** | 유효한 행을 **한 번에** 끝에 추가 | 슬롯을 한 번에 추가 | 새 항목들을 정렬해 기존 목차와 **한 번에 병합** |
-| **update** | 수정본 **전체를 끝에 추가**(옛 줄은 방치) | 그 id 슬롯을 **새 위치로 덮어씀** | 날짜가 **바뀐 경우에만** 새 항목 끼워 넣음(옛 항목은 읽을 때 무시) |
-| **delete** | 변화 없음 | 그 id 슬롯을 `(0, 0)` 으로 | 변화 없음(읽을 때 삭제된 슬롯은 무시) |
-| **compact** | **살아있는 최신본만** 새 파일로 옮겨 씀(옛 줄·삭제분 제거) | 같은 슬롯 번호, **위치만 갱신**(삭제 슬롯은 `(0,0)` 유지) | 살아있는 거래로 **처음부터 재생성**(무시되던 항목 정리) |
+| **add** | 끝에 한 줄 추가 | 슬롯 추가 | 날짜가 가장 늦으면 끝에 추가, 아니면 제 위치에 끼워 넣기 |
+| **import** | 유효한 행을 한 번에 끝에 추가 | 슬롯을 한 번에 추가 | 새 항목을 정렬해 한 번에 병합 |
+| **update** | 수정본 전체를 끝에 추가 (옛 줄은 남음) | 그 id 슬롯을 새 위치로 덮어씀 | 날짜가 바뀐 경우에만 새 항목 추가 (옛 항목은 읽을 때 무시) |
+| **delete** | 변화 없음 | 그 id 슬롯을 `(0, 0)` 으로 | 변화 없음 (삭제된 슬롯은 읽을 때 무시) |
+| **compact** | 살아있는 최신본만 새 파일로 옮겨 씀 | 슬롯 번호 그대로, 위치만 갱신 | 살아있는 거래로 처음부터 다시 만듦 |
 
-세 파일은 모두 "끝에 추가"가 기본이고, 중간을 고치는 건 `idx` 의 16바이트 슬롯 덮어쓰기와 `date.idx` 병합(임시파일 + `os.replace`)뿐입니다.
-
-**예시** — 한 줄이 112바이트라고 보고 `@N` 은 `jsonl` 안의 시작 위치입니다. (`date.idx` 는 `날짜:id`)
+**예시** — `@N` 은 `jsonl` 안의 줄 시작 위치(한 줄을 112바이트로 가정), `date.idx` 는 `날짜:id` 입니다.
 
 | 단계 | `transactions.jsonl` (id, 날짜, 금액) | `idx` (TX-1, TX-2, TX-3 → 위치) | `date.idx` (오래된 → 최신) |
 |---|---|---|---|
 | ① add 2건 (5/01 100, 5/03 200) | @0 (1, 05-01, 100) · @112 (2, 05-03, 200) | @0, @112 | 05-01:1, 05-03:2 |
-| ② import 옛 날짜 (4/10 300 → **TX-3**) | + @224 (3, 04-10, 300) | @0, @112, @224 | **04-10:3**, 05-01:1, 05-03:2 ← 가장 오래된 날짜라 **맨 앞**에 들어감 |
+| ② import 옛 날짜 (4/10 300 → TX-3) | + @224 (3, 04-10, 300) | @0, @112, @224 | **04-10:3**, 05-01:1, 05-03:2 (가장 오래돼서 맨 앞) |
 | ③ update TX-1 금액만 → 150 | + @336 (1, 05-01, 150) | **@336**, @112, @224 | 변화 없음 |
-| ④ update TX-1 날짜 → 05-05 | + @448 (1, 05-05, 150) | **@448**, @112, @224 | + **05-05:1** (05-01:1 은 옛 항목으로 남음) |
-| ⑤ delete TX-2 | 변화 없음 | @448, **(0,0)**, @224 | 변화 없음 (05-03:2 는 읽을 때 무시) |
-| ⑥ compact | **@0 (1, 05-05, 150) · @112 (3, 04-10, 300)** 만 남음 | **@0, (0,0), @112** | **04-10:3, 05-05:1** 만 남음 |
+| ④ update TX-1 날짜 → 05-05 | + @448 (1, 05-05, 150) | **@448**, @112, @224 | + **05-05:1** (05-01:1 은 옛 항목) |
+| ⑤ delete TX-2 | 변화 없음 | @448, **(0,0)**, @224 | 변화 없음 |
+| ⑥ compact | @0 (1, 05-05, 150) · @112 (3, 04-10, 300) 만 남음 | @0, (0,0), @112 | 04-10:3, 05-05:1 만 남음 |
 
-- ②처럼 id 는 3(가장 큼)이지만 날짜가 가장 오래돼서 `list` 에서는 **맨 아래**입니다. ⑤ 이후 `list` 는 `TX-1(05-05)` → `TX-3(04-10)` 순서입니다(④ 직후에는 `TX-1(05-05)` → `TX-2(05-03)` → `TX-3(04-10)`).
-- ③④에서 TX-1 의 옛 줄(@0, @336)은 어떤 슬롯도 가리키지 않는 **고아 줄**이 되고, `date.idx` 의 `05-01:1` 도 읽을 때
-  "레코드의 날짜(05-05)와 달라서" 건너뜁니다. ⑥ `compact` 가 이런 찌꺼기를 모두 정리하고 **id 는 그대로** 둡니다
-  (삭제된 TX-2 의 번호는 비어 있는 채로 유지되어 재사용되지 않음).
-- `date.idx` 는 원본(`jsonl`/`idx`)에서 언제든 다시 만들 수 있어서, 파일이 없거나 손상되면 다음 실행 때 자동으로 재생성됩니다.
+- ② 이후 TX-3 은 id 가 가장 크지만 날짜가 가장 오래돼서 `list` 맨 아래입니다.
+- ③④ 에서 남은 옛 줄(@0, @336)과 옛 날짜 항목(05-01:1)은 읽을 때 건너뛰고, ⑥ `compact` 가 정리합니다. **id 는 바뀌지 않고**, 삭제된 번호는 재사용되지 않습니다.
+- `date.idx` 는 `jsonl`/`idx` 에서 언제든 다시 만들 수 있어서, 파일이 없거나 손상되면 다음 실행 때 자동으로 재생성됩니다.
 
-**왜 JSONL 인가** — 메모·태그에 쉼표나 따옴표가 들어가도 이스케이프 고민 없이 안전하게 저장되고,
-한 줄이 곧 한 레코드라 줄 단위 append 와 byte 범위 읽기가 자연스럽습니다. CSV 는 사람이 주고받는
-교환 포맷(`import`/`export`)으로만 씁니다.
+### compact
 
-**왜 카테고리/예산은 통째로 다시 쓰는가** — 데이터가 수십~수백 건 수준이라 append + 인덱스 구조의
-복잡도를 감수할 이유가 없습니다. 대신 임시 파일에 전부 쓴 뒤 `os.replace` 로 바꿔 끼워, 쓰다가 죽어도
-원본이 반쯤 망가지지 않게 했습니다.
-
-### `transactions.idx` 구조
-
-```
-슬롯 = struct.pack("<QQ", startOffset, endOffset)   # 8B + 8B = 16B
-id N 의 슬롯 위치 = (N - 1) * 16                     # 슬롯의 "위치"가 곧 id
-삭제 표시            = start == 0 and end == 0        # 16바이트를 0으로 채움
-다음 id             = 파일 크기 // 16 + 1
-```
-
-- 슬롯 안에 id 를 따로 저장하지 않습니다. **위치가 곧 id** 이므로 id 조회는 `seek` 한 번(O(1))입니다.
-- 실제 레코드는 항상 `end > start` 이므로, offset 0 에서 시작하는 `TX-1` 이 살아 있어도
-  삭제 표시 `(0, 0)` 과 혼동되지 않습니다.
-- 삭제해도 슬롯은 파일에서 제거되지 않고 0으로만 초기화되므로 **id 는 재사용되지 않습니다**
-  (별도의 카운터 파일이 필요 없습니다).
-
-### 왜 `compact` 가 필요한가
-
-`update`는 기존 줄을 고치지 않고 새 버전을 끝에 덧붙이고(append-only), `delete`는
-로그를 아예 건드리지 않은 채 인덱스 슬롯만 0으로 초기화합니다. 그래서 **`update`와
-`delete`가 쌓일수록** `transactions.jsonl`에 아무도 참조하지 않는 **고아 레코드**가
-남고 파일이 계속 커집니다. `compact`는 인덱스가 가리키는 살아있는 레코드만 골라 새
-파일로 옮겨 쓴 뒤 통째로 교체합니다. 슬롯의 개수와 순서는 그대로 두고 offset 값만
-고치므로 **id는 절대 바뀌지 않습니다.**
-
-```bash
-python -m budget_app compact
-```
-
-CLI는 `update`·`delete` 실행 직후 고아 데이터 비율을 확인해서, 50%를 넘으면 `compact`를
-안내합니다(`console.py`의 `maybe_hint_compact()`). 자동으로 `compact`를 실행하지는 않습니다 —
-명령마다 새로 뜨는 1회성 CLI라 "유휴 시간 자동 정리"가 성립하지 않기도 하고, 사용자
-모르게 로그 파일 전체를 재작성하는 것보다 시점을 사용자가 직접 고르게 하는 편이
-안전하다고 판단했기 때문입니다.
-
-### 날짜 인덱스와 최신순 조회
-
-"최신순"은 **거래일자 기준**(같은 날짜면 id 큰 순)입니다. 그런데 id 는 등록 순서라서, 옛 날짜 CSV 를
-import 하면 "id 는 가장 크지만 거래일자는 가장 오래된" 거래가 생깁니다. id 슬롯만 거꾸로 읽으면 그 거래가
-맨 위에 나오므로, 날짜 순서를 맡는 **`transactions.date.idx`** 를 따로 둡니다.
-
-```
-항목 = struct.pack("<IQ", date.toordinal(), id)            # 4B + 8B = 12B
-파일  = 항목들이 (날짜, id) 오름차순으로 정렬되어 있음
-```
-
-예) 기존 TX-1(10/01), TX-2(10/03) 에 9/05 거래를 import 해 TX-3 이 되면:
-
-```
-날짜 인덱스: [(09/05, 3), (10/01, 1), (10/03, 2)]
-list(끝에서 역순) → TX-2, TX-1, TX-3      ← id 는 TX-3 이 가장 크지만 날짜가 가장 오래돼 맨 아래
-```
-
-- **읽기**: `TransactionRepository.iter_latest_transactions()` 제너레이터가 날짜 인덱스를 **맨 끝부터 역순으로** 읽고,
-  항목마다 해당 id 레코드의 byte 범위만 `seek` 해서 읽습니다. 전체를 메모리에 올리지 않고 `--limit` 에서 멈추면
-  그 뒤는 읽지 않으므로(조기 종료) 거래가 수백만 건이어도 최신 N건은 빠릅니다.
-  삭제된 거래의 항목, 날짜가 바뀌기 전의 옛 항목은 레코드와 대조해 건너뜁니다.
-- **기간 조건**: `search --from/--to/--month`, `summary --month`, `export` 는 이진 탐색으로 그 기간 구간만 읽습니다
-  (전체 스캔 없음). 그 밖의 필터(카테고리/타입/메모/태그)는 읽은 레코드에 적용합니다.
-- **쓰기 비용**: 평소 add 는 끝에 append(O(1))입니다. 옛 날짜 거래는 병합이 필요한데, import 는 모아서 **한 번만**
-  병합(O(n+m))합니다.
-- **파생 데이터**: 날짜 인덱스는 `transactions.jsonl`/`idx` 에서 언제든 다시 만들 수 있습니다. 파일이 없거나 손상되면
-  (예: 이 인덱스가 생기기 전의 데이터 폴더) 다음 실행 때 **자동으로 재생성**하고, `compact` 도 재생성합니다.
-- `category remove` 의 사용 중 판정은 기간 조건이 없어 전체를 읽습니다.
+`update` 와 `delete` 가 쌓이면 `transactions.jsonl` 에 더 이상 쓰이지 않는 옛 줄이 남아 파일이 커집니다.
+`python -m budget_app compact` 로 정리하며, `update`/`delete` 후 옛 줄이 절반을 넘으면 CLI 가 안내합니다(자동 실행은 하지 않음).
 
 ---
 
@@ -717,23 +399,22 @@ date,type,category,amount,memo,tags
 - `import` 는 **행 단위로 검증**하고, 실패한 행은 건너뛴 뒤 사유와 함께 `imported=N, skipped=M` 를 출력합니다.
 - `export` 는 `--month` 또는 (`--from` **AND** `--to`) 중 **최소 한 가지 조건이 필수**입니다
   (실수로 전체를 덤프하지 않도록). `--category` / `--type` / `--q` / `--tag` 를 추가로 AND 결합할 수 있습니다.
-- `export` → `import` 왕복이 가능합니다(테스트로 검증).
+- `export` → `import` 왕복이 가능합니다.
 
 ---
 
-## 6. 주요 정책 (Decision Log)
+## 6. 주요 정책
 
-| 항목 | 결정 | 이유 |
-|---|---|---|
-| 저장 포맷 | **JSONL** | 특수문자·쉼표를 포함한 메모/태그 처리에 유리 |
-| `update` 방식 | **대화형 기반(안 B)** 으로 고정 — `update --id TX-3` 후 항목별 입력 (필드 옵션 없음) | 현재 값을 보면서 고칠 수 있어 수정이 수월함. 엔터=기존 값 유지, 메모/태그는 `-` 입력 시 비움, 검증 실패 시 재입력 |
-| 카테고리 초기화 | **안 B** — 카테고리가 비어 있으면 `add` 를 차단하고 `category add` 를 안내 | 기본 카테고리를 임의로 만들어 주지 않음 |
-| 거래 id 표시 | `TX-1`, `TX-2` … (**zero-padding 없음**) | 자릿수를 고정하면 대용량에서 자릿수 초과 문제가 생김 |
-| id 재번호 | **하지 않음** — 삭제 후 빈 번호(gap)는 정상 | ① 레코드 본문에 id 가 있어 재번호하려면 다시 써야 하고 append-only 전제가 깨짐 ② "위치=id" 인덱스에서 재번호는 뒤 슬롯을 전부 밀어야 해서 O(1) 삭제가 O(n)이 됨 ③ 실제 회계 시스템도 취소된 번호를 재사용하지 않음(감사 관점) |
-| 빈 번호 심미성 | **표시 계층에서 해결** | `list`/`search` 출력 왼쪽에 화면용 순번(1,2,3…)을 따로 매김. 내부 참조는 항상 불변 id |
-| 카테고리 삭제 | 사용 중이면 **차단** | 대체 카테고리를 요구하는 방식은 단순성을 위해 채택하지 않음 |
-| 예산 재설정 | 같은 달은 **덮어쓰기** (이전 금액을 안내 메시지로 표시) | 월 예산은 한 달에 하나여야 자연스러움 |
-| 검증 실패 처리 | 대화형 입력은 **재입력 루프**, 옵션 입력은 **오류+힌트 후 종료(exit 1)** | 자동화 스크립트가 잘못된 값으로 조용히 진행되지 않도록 |
+| 항목 | 결정 |
+|---|---|
+| 저장 포맷 | **JSONL** |
+| `update` 방식 | **대화형**으로 고정 — `update --id TX-3` 후 항목별 입력 (엔터=유지, 메모/태그는 `-` 입력 시 비움, 검증 실패 시 재입력) |
+| 카테고리 초기화 | 카테고리가 비어 있으면 `add` 를 막고 `category add` 를 안내 (기본 카테고리를 만들지 않음) |
+| 카테고리 삭제 | 사용 중이면 **삭제를 막음** |
+| 예산 재설정 | 같은 달은 **덮어쓰기** |
+| 거래 id | `TX-1`, `TX-2` … 삭제해도 **재사용·재번호하지 않음** (번호가 비는 것은 정상) |
+| 목록 번호 | `list`/`search` 왼쪽 `#` 은 화면용 순번이고, 수정/삭제에는 `TX-N` 을 사용 |
+| 검증 실패 | 대화형은 **다시 입력**, 옵션 방식은 **오류 + 힌트 후 종료(코드 1)** |
 
 ### 종료 코드
 
@@ -741,10 +422,10 @@ date,type,category,amount,memo,tags
 |---|---|
 | `0` | 정상 종료 |
 | `1` | 검증 실패 / 데이터 없음 / 입출력 오류 (`[오류]` + `[힌트]` 출력) |
-| `2` | argparse 사용법 오류 (잘못된 옵션 등) |
+| `2` | 사용법 오류 (잘못된 옵션 등) |
 | `130` | 사용자가 Ctrl+C / EOF 로 입력을 취소 |
 
-예외는 스택트레이스 대신 항상 아래 형식으로 출력됩니다(원인 추적이 필요하면 `--verbose`).
+오류는 스택트레이스 대신 항상 아래 형식으로 출력됩니다(원인 추적이 필요하면 `--verbose`).
 
 ```
 [오류] 등록되지 않은 카테고리입니다: '외식비'
@@ -753,63 +434,45 @@ date,type,category,amount,memo,tags
 
 ---
 
-## 7. 아키텍처 / 모듈 구조
+## 7. 모듈 구조
 
 ```
 budget_app/
-├── __main__.py     python -m budget_app 진입점 (종료 코드 전달)
-├── cli.py          argparse 파서 정의 + main (커맨드 ↔ 핸들러 연결만 담당)
-├── context.py      AppContext — 저장소/서비스 조립
+├── __main__.py     python -m budget_app 진입점
+├── cli.py          argparse 파서 정의 + main (커맨드 ↔ 핸들러 연결)
+├── context.py      저장소/서비스 조립
 ├── console.py      핸들러 공용 입출력(오류 출력, id 파싱, 재입력 루프, 거래 표 출력)
 ├── commands/       커맨드 핸들러 (서브커맨드 1개 = 함수 1개)
 │   ├── transaction.py  add / list / search / update / delete
-│   ├── report.py       summary / budget set·show·list·remove
+│   ├── report.py       summary / budget
 │   ├── category.py     category add / list / remove
 │   ├── data.py         import / export / compact / backup
 │   └── recurring.py    recurring add / list / remove / apply
-├── validators.py   입력 검증·정규화(날짜/월/타입/금액/일자/태그)
-├── services.py     거래 CRUD·검색·월별 요약, 예산 계산, 반복규칙 (비즈니스 로직)
+├── validators.py   입력 검증(날짜/월/타입/금액/일자/태그)
+├── services.py     거래 검색·월별 요약, 예산 계산, 반복 규칙 (비즈니스 로직)
 ├── file_services.py  CSV 가져오기/내보내기, 백업
-├── repository.py   TransactionRepository / TransactionIndex / DateIndex (append-only 로그 + id 이진 인덱스 + 날짜 정렬 인덱스)
-├── stores.py       JsonlStore / CategoryStore / BudgetStore / RecurringStore
-├── models.py       Transaction·Category·Budget·RecurringRule dataclass, 커스텀 예외
-├── formatter.py    외부 라이브러리 없는 표 정렬(전각 문자 폭 계산), 금액/막대 포맷
-└── decorators.py   handle_errors / log_call / timeit (functools.wraps 로 메타데이터 보존)
+├── repository.py   거래 저장소 (jsonl 로그 + id 인덱스 + 날짜 인덱스)
+├── stores.py       카테고리 / 예산 / 반복 규칙 저장소 (JSONL)
+├── models.py       Transaction 등 dataclass, 커스텀 예외
+├── formatter.py    표 정렬(한글 폭 계산), 금액/막대 포맷
+└── decorators.py   @command = 예외 처리 + 로그 + 시간 측정
 tests/
-└── test_requirement_checklist.py  인수 테스트 — 9개 기능 시나리오 + 데코레이터/종료코드/포맷/원자성/보너스 (unittest 기반, 총 51개)
+└── test_requirement_checklist.py
 ```
 
-계층 책임은 **모델 → 저장소 → 서비스 → 커맨드 핸들러/CLI** 로 분리되어 있습니다.
-저장 방식(파일 포맷)은 `repository`/`stores` 만 알고, 규칙은 `services` 가, 사람과의 입출력은
-`commands/`(핸들러)·`console.py`(공용 입출력)가, 커맨드 연결은 `cli` 가 담당합니다. 모든 공개 함수/메서드에 타입 힌트가 붙어 있습니다.
-
-주요 클래스: `Transaction`, `TransactionIndex`, `DateIndex`, `TransactionRepository`, `JsonlStore`,
-`CategoryStore`, `BudgetStore`, `RecurringStore`, `TransactionService`, `BudgetService`,
-`CsvService`, `BackupService`, `RecurringService`, `SearchCriteria`, `MonthlySummary`.
-
-데코레이터는 `@command` (= `@handle_errors` + `@log_call` + `@timeit`) 하나로 묶어 모든 커맨드
-핸들러에 적용했습니다. 예외를 `[오류]`/`[힌트]` 형식으로 바꾸고 종료 코드를 정하는 일을 커맨드마다
-반복하지 않기 위해서입니다.
+계층은 **모델 → 저장소 → 서비스 → 커맨드 핸들러/CLI** 로 나뉩니다. 파일 형식은 `repository`/`stores` 만 알고,
+규칙은 `services` 가, 사용자 입출력은 `commands/`·`console.py` 가 담당합니다.
+공통 처리(예외를 `[오류]`/`[힌트]` 로 바꾸고 종료 코드 정하기, 로그, 시간 측정)는 데코레이터 `@command` 하나로 모든 커맨드에 적용합니다.
 
 ---
 
 ## 8. 알려진 한계
 
-- **크래시 안전성**: `transactions.idx` 의 16바이트 슬롯을 덮어쓰는 도중 정확히 그 순간 프로세스가
-  강제 종료되면 해당 슬롯이 손상될 이론적 가능성이 있습니다. WAL 같은 완전한 크래시 안전성은
-  이 과제 범위 밖입니다. (쓰기 후 `fsync` 는 호출하며, 카테고리/예산 파일은 임시파일 + `os.replace`
-  로 원자적으로 교체합니다.)
-- **날짜 인덱스 쓰기 순서**: 로그 → id 슬롯 → 날짜 항목 순으로 쓰므로, 그 사이에 프로세스가 죽으면 새 거래가 목록에서
-  빠져 보일 수 있습니다(데이터는 남아 있음). 파생 데이터라 `compact` 로 복구됩니다.
-- **인덱스 파일 증가**: id 를 재사용하지 않으므로 `transactions.idx` 는 지금까지 발급한 id 수 × 16바이트이고, 삭제는 크기를
-  줄이지 않습니다(0 슬롯으로 남음, `compact` 로도 그대로). 날짜 인덱스는 삭제/날짜 변경 항목이 `compact` 때까지 남습니다.
-- **로그 파일 증가**: `update` 가 쌓이면 `transactions.jsonl` 이 계속 커집니다. `compact` 명령으로
-  정리할 수 있고, 고아 비율이 50% 를 넘으면 CLI 가 안내합니다.
-- **파일 크기 상한**: offset 이 8바이트(unsigned)라 이론상 로그 파일 상한은 사실상 무제한 수준이며,
-  개인 가계부 규모에서는 문제되지 않습니다.
-- **동시 실행**: 같은 `--data-dir` 에 대해 여러 프로세스를 동시에 실행하는 상황은 고려하지 않았습니다
-  (파일 잠금 없음). 1인 사용 CLI 를 전제로 합니다.
-- **삭제된 id 의 gap**: 설계상 정상 동작입니다(위 Decision Log 참조).
+- **크래시 안전성**: 파일을 쓰는 도중 프로세스가 강제 종료되면 인덱스가 어긋날 수 있습니다(완전한 복구 기능은 없음).
+  날짜 인덱스는 `compact` 로 다시 만들 수 있습니다.
+- **파일 증가**: `update` 가 쌓이면 `transactions.jsonl` 이 커지고(`compact` 로 정리), `transactions.idx` 는 발급한 id 수 × 16바이트라
+  삭제해도 줄지 않습니다.
+- **동시 실행**: 같은 `--data-dir` 에 여러 프로세스를 동시에 실행하는 경우는 고려하지 않았습니다(1인 사용 전제).
 
 ---
 
