@@ -577,6 +577,50 @@ ls data                                            # transactions.date.idx 가 �
 | `data/budgets.jsonl` | 월별 예산 | 텍스트 JSONL | 전체 재작성 (임시파일 + `os.replace`) |
 | `data/recurring.jsonl` | 반복 거래 규칙 (보너스) | 텍스트 JSONL | 전체 재작성 (임시파일 + `os.replace`) |
 
+### 거래 데이터 파일 관리 한눈에 보기
+
+거래는 **세 파일이 역할을 나눠** 관리합니다. 원본은 한 곳에만 있고, 나머지 둘은 "어디에 있는지 / 어떤 순서인지"를 알려주는 색인입니다.
+
+| 파일 | 한 줄 요약 | 비유 |
+|---|---|---|
+| `transactions.jsonl` | 거래 **내용** 원본. 항상 끝에만 덧붙임(수정 전 내용도 남음) | 일기장 |
+| `transactions.idx` | **id → 현재 내용이 어디에 있는가** (슬롯 N = id N, 삭제는 0) | 쪽수 찾아보기 |
+| `transactions.date.idx` | **(거래일자, id) 날짜순 목록**. 최신순 조회/기간 조회용 | 날짜별 목차 |
+
+**"최신"은 `(거래일자, id)` 로 정합니다** — 거래일자가 늦은 것이 최신이고, 같은 날짜면 id 가 큰(나중에 등록한) 것이 최신입니다.
+id 는 등록 순서일 뿐이라 옛 날짜 거래를 나중에 import 해도 id 는 크지만 최신이 되지는 않습니다.
+`list` 는 날짜 목차(`date.idx`)를 **맨 끝부터 거꾸로** 읽고, 항목마다 `idx` 로 위치를 찾아 `jsonl` 에서 그 한 건만 읽다가
+`--limit` 개수가 차면 멈춥니다(전체를 읽지 않음).
+
+**add / import / update / delete / compact 가 일어나면 각 파일은 이렇게 바뀝니다**
+
+| 동작 | `transactions.jsonl` (내용) | `transactions.idx` (id → 위치) | `transactions.date.idx` (날짜순 목차) |
+|---|---|---|---|
+| **add** | 끝에 한 줄 추가 | 슬롯 1개 추가 | 날짜가 가장 늦으면 **끝에 추가**, 아니면 제자리에 **끼워 넣기** |
+| **import** | 유효한 행을 **한 번에** 끝에 추가 | 슬롯을 한 번에 추가 | 새 항목들을 정렬해 기존 목차와 **한 번에 병합** |
+| **update** | 수정본 **전체를 끝에 추가**(옛 줄은 방치) | 그 id 슬롯을 **새 위치로 덮어씀** | 날짜가 **바뀐 경우에만** 새 항목 끼워 넣음(옛 항목은 읽을 때 무시) |
+| **delete** | 변화 없음 | 그 id 슬롯을 `(0, 0)` 으로 | 변화 없음(읽을 때 삭제된 슬롯은 무시) |
+| **compact** | **살아있는 최신본만** 새 파일로 옮겨 씀(옛 줄·삭제분 제거) | 같은 슬롯 번호, **위치만 갱신**(삭제 슬롯은 `(0,0)` 유지) | 살아있는 거래로 **처음부터 재생성**(무시되던 항목 정리) |
+
+세 파일은 모두 "끝에 추가"가 기본이고, 중간을 고치는 건 `idx` 의 16바이트 슬롯 덮어쓰기와 `date.idx` 병합(임시파일 + `os.replace`)뿐입니다.
+
+**예시** — 한 줄이 112바이트라고 보고 `@N` 은 `jsonl` 안의 시작 위치입니다. (`date.idx` 는 `날짜:id`)
+
+| 단계 | `transactions.jsonl` (id, 날짜, 금액) | `idx` (TX-1, TX-2, TX-3 → 위치) | `date.idx` (오래된 → 최신) |
+|---|---|---|---|
+| ① add 2건 (5/01 100, 5/03 200) | @0 (1, 05-01, 100) · @112 (2, 05-03, 200) | @0, @112 | 05-01:1, 05-03:2 |
+| ② import 옛 날짜 (4/10 300 → **TX-3**) | + @224 (3, 04-10, 300) | @0, @112, @224 | **04-10:3**, 05-01:1, 05-03:2 ← 가장 오래된 날짜라 **맨 앞**에 들어감 |
+| ③ update TX-1 금액만 → 150 | + @336 (1, 05-01, 150) | **@336**, @112, @224 | 변화 없음 |
+| ④ update TX-1 날짜 → 05-05 | + @448 (1, 05-05, 150) | **@448**, @112, @224 | + **05-05:1** (05-01:1 은 옛 항목으로 남음) |
+| ⑤ delete TX-2 | 변화 없음 | @448, **(0,0)**, @224 | 변화 없음 (05-03:2 는 읽을 때 무시) |
+| ⑥ compact | **@0 (1, 05-05, 150) · @112 (3, 04-10, 300)** 만 남음 | **@0, (0,0), @112** | **04-10:3, 05-05:1** 만 남음 |
+
+- ②처럼 id 는 3(가장 큼)이지만 날짜가 가장 오래돼서 `list` 에서는 **맨 아래**입니다. ⑤ 이후 `list` 는 `TX-1(05-05)` → `TX-3(04-10)` 순서입니다(④ 직후에는 `TX-1(05-05)` → `TX-2(05-03)` → `TX-3(04-10)`).
+- ③④에서 TX-1 의 옛 줄(@0, @336)은 어떤 슬롯도 가리키지 않는 **고아 줄**이 되고, `date.idx` 의 `05-01:1` 도 읽을 때
+  "레코드의 날짜(05-05)와 달라서" 건너뜁니다. ⑥ `compact` 가 이런 찌꺼기를 모두 정리하고 **id 는 그대로** 둡니다
+  (삭제된 TX-2 의 번호는 비어 있는 채로 유지되어 재사용되지 않음).
+- `date.idx` 는 원본(`jsonl`/`idx`)에서 언제든 다시 만들 수 있어서, 파일이 없거나 손상되면 다음 실행 때 자동으로 재생성됩니다.
+
 **왜 JSONL 인가** — 메모·태그에 쉼표나 따옴표가 들어가도 이스케이프 고민 없이 안전하게 저장되고,
 한 줄이 곧 한 레코드라 줄 단위 append 와 byte 범위 읽기가 자연스럽습니다. CSV 는 사람이 주고받는
 교환 포맷(`import`/`export`)으로만 씁니다.
@@ -599,16 +643,6 @@ id N 의 슬롯 위치 = (N - 1) * 16                     # 슬롯의 "위치"�
   삭제 표시 `(0, 0)` 과 혼동되지 않습니다.
 - 삭제해도 슬롯은 파일에서 제거되지 않고 0으로만 초기화되므로 **id 는 재사용되지 않습니다**
   (별도의 카운터 파일이 필요 없습니다).
-
-### 연산별 동작
-
-| 연산 | `transactions.jsonl` | `transactions.idx` | `transactions.date.idx` |
-|---|---|---|---|
-| `add` | 끝에 레코드 append | 16바이트 슬롯을 끝에 추가 | 날짜가 마지막 항목 이상이면 끝에 append, 옛 날짜면 끼워 넣기(병합) |
-| `import` | 유효한 행을 한 번에 이어 쓰기(fsync 1회) | 슬롯을 한 번에 이어 쓰기 | 새 항목을 모아 **한 번에 병합** (O(n+m)) |
-| `update` | 수정된 **전체 레코드를 끝에 append** (기존 줄은 그대로 방치) | 해당 id 슬롯을 새 offset 으로 덮어쓰기 | **날짜가 바뀐 경우에만** 새 항목을 끼워 넣음(옛 항목은 읽을 때 건너뜀) |
-| `delete` | 아무것도 하지 않음 | 해당 id 슬롯 16바이트를 0으로 초기화 | 변경 없음(읽을 때 삭제된 슬롯이면 건너뜀) |
-| `compact` | 살아있는 레코드만 새 파일로 옮겨 쓰고 `os.replace` 로 교체 | 슬롯 개수·순서는 그대로, offset 값만 갱신 | 살아있는 거래만으로 **처음부터 재생성**(삭제/옛 항목 정리) |
 
 ### 왜 `compact` 가 필요한가
 
@@ -736,7 +770,7 @@ budget_app/
 ├── validators.py   입력 검증·정규화(날짜/월/타입/금액/일자/태그)
 ├── services.py     거래 CRUD·검색·월별 요약, 예산 계산, 반복규칙 (비즈니스 로직)
 ├── file_services.py  CSV 가져오기/내보내기, 백업
-├── repository.py   TransactionRepository / TransactionIndex (append-only 로그 + 이진 인덱스)
+├── repository.py   TransactionRepository / TransactionIndex / DateIndex (append-only 로그 + id 이진 인덱스 + 날짜 정렬 인덱스)
 ├── stores.py       JsonlStore / CategoryStore / BudgetStore / RecurringStore
 ├── models.py       Transaction·Category·Budget·RecurringRule dataclass, 커스텀 예외
 ├── formatter.py    외부 라이브러리 없는 표 정렬(전각 문자 폭 계산), 금액/막대 포맷
@@ -749,7 +783,7 @@ tests/
 저장 방식(파일 포맷)은 `repository`/`stores` 만 알고, 규칙은 `services` 가, 사람과의 입출력은
 `commands/`(핸들러)·`console.py`(공용 입출력)가, 커맨드 연결은 `cli` 가 담당합니다. 모든 공개 함수/메서드에 타입 힌트가 붙어 있습니다.
 
-주요 클래스: `Transaction`, `TransactionIndex`, `TransactionRepository`, `JsonlStore`,
+주요 클래스: `Transaction`, `TransactionIndex`, `DateIndex`, `TransactionRepository`, `JsonlStore`,
 `CategoryStore`, `BudgetStore`, `RecurringStore`, `TransactionService`, `BudgetService`,
 `CsvService`, `BackupService`, `RecurringService`, `SearchCriteria`, `MonthlySummary`.
 
