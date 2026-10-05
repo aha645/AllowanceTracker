@@ -16,7 +16,7 @@ python -m budget_app --help              # 전체 도움말
 python -m budget_app <command> --help    # 서브커맨드별 도움말
 ```
 
-첫 실행 시 저장 폴더(`./data`)와 데이터 파일 5종(필수 3종 transactions/categories/budgets + 보조 2종)이 자동 생성됩니다.
+첫 실행 시 저장 폴더(`./data`)와 데이터 파일 6종(필수 3종 transactions/categories/budgets + 보조 3종)이 자동 생성됩니다.
 저장 위치는 `--data-dir` 로 바꿀 수 있습니다.
 
 ```bash
@@ -26,7 +26,7 @@ python -m budget_app --verbose list      # 실행 로그/시간 측정 출력(�
 
 ### 테스트 실행
 
-외부 라이브러리 없이 표준 `unittest`로 작성되어 있고, 테스트 파일은 **`tests/test_requirement_checklist.py` 하나**입니다(총 45개).
+외부 라이브러리 없이 표준 `unittest`로 작성되어 있고, 테스트 파일은 **`tests/test_requirement_checklist.py` 하나**입니다(총 51개).
 `doc/request.md` 의 9개 기능(add → list → search → summary → budget → category → update → delete →
 import/export)을 요구사항 순서대로 **하나의 시나리오로 이어서** 필수 항목만 검증하고, 이어서 공통 관심사와
 보너스를 검증합니다.
@@ -39,6 +39,7 @@ import/export)을 요구사항 순서대로 **하나의 시나리오로 이어�
 | 12x | 표 포맷 (구분선, 부호, 천 단위 구분, 예산 막대) |
 | 13x | 저장 원자성 (임시파일 교체 실패 시 원본 보존, 거래 로그 append 전용 + 인덱스 제자리 갱신) |
 | 14x · 15x | 보너스: 백업, 반복 내역 |
+| 16x | 날짜 인덱스 (옛 날짜 거래/import 여도 거래일자 최신순, `--limit` 만큼만 읽기, `compact`/인덱스 삭제 후 복구) |
 
 CLI를 블랙박스로 호출(`main(argv)`)하고 출력 문자열과 저장 파일만으로 판단합니다. 모든 테스트가
 `tests/data` 폴더 하나를 공유하며 번호 순서대로 데이터를 이어받습니다. 데이터는 **`test_000_reset_data`
@@ -189,7 +190,7 @@ python -m budget_app summary --month 2024-01 --top 3
 |---|---|---|
 | `add` | 거래 추가 (옵션 없이 실행하면 대화형) | `python -m budget_app add` |
 | `add` (옵션) | 자동화용 비대화형 추가 | `python -m budget_app add --date 2024-01-05 --type expense --category "식비" --amount 12000 --memo "점심" --tags "외식,점심"` |
-| `list` | 거래 목록(최신순) | `python -m budget_app list --limit 20` |
+| `list` | 거래 목록(**거래일자 최신순**, 같은 날짜면 나중에 등록한 것이 먼저) | `python -m budget_app list --limit 20` |
 | `list --all` | 전체 출력 (`--limit` 과 함께 쓸 수 없음) | `python -m budget_app list --all` |
 | `search` | 조건 검색(AND 결합) | `python -m budget_app search --from 2024-01-01 --to 2024-01-31 --category "식비" --type expense --q "점심" --tag "외식"` |
 | `summary` | 월별 요약 + 예산 사용률 | `python -m budget_app summary --month 2024-01 --top 3` |
@@ -465,7 +466,7 @@ python -m budget_app export --out export_2024_02.csv --month 2024-02            
 cat export_2024_02.csv             # 헤더 date,type,category,amount,memo,tags + 2행. "점심, 회사 근처" 처럼 쉼표가 든 메모도 그대로
 python -m budget_app export --out export_range.csv --from 2024-01-01 --to 2024-01-31    # (3 records) ← 식비(15000, 수정 반영), 월급, 월세. 삭제한 교통은 없음
 python -m budget_app export --out none.csv          # [오류] 내보내기 조건이 없습니다. → 1
-ls data                       # budgets.jsonl categories.jsonl transactions.jsonl (+ transactions.idx, recurring.jsonl) 영구 저장 확인
+ls data                       # budgets.jsonl categories.jsonl transactions.jsonl (+ transactions.idx, transactions.date.idx, recurring.jsonl) 영구 저장 확인
 ```
 
 ### 11) 데코레이터 · 종료 코드 · 표 포맷 (10x ~ 12x)
@@ -523,18 +524,55 @@ python -m budget_app recurring remove --id RC-1              # 삭제
 python -m budget_app recurring list                          # "등록된 반복 규칙이 없습니다."
 ```
 
-실습이 끝나면 `rm -rf ./data import.csv export_*.csv none.csv` 로 정리하세요(`./data` 에는 실습 데이터만 들어 있어야 합니다).
+### 15) 날짜 인덱스 — 옛 날짜 거래를 넣어도 거래일자 최신순 (16x)
+
+id 는 등록 순서이므로, 나중에 등록한 **옛 날짜** 거래는 "id 는 가장 크지만 거래일자는 가장 오래된" 거래입니다.
+이런 거래가 `list` 맨 위로 올라오지 않고 날짜 위치에 들어가는지 확인합니다(위 단계를 모두 마쳤다면 이 거래는 `TX-9` 가 됩니다).
+
+```bash
+cat > old.csv <<'CSV'
+date,type,category,amount,memo,tags
+2023-12-15,expense,식비,7000,옛거래,
+CSV
+
+python -m budget_app import --from old.csv        # imported=1, skipped=0
+python -m budget_app list --all                   # TX-9 는 id 가 가장 크지만 날짜(2023-12-15)가 가장 오래돼 맨 아래
+python -m budget_app list --limit 1               # 맨 위는 가장 최신 거래일자의 거래(TX-8, 2024-02-29)
+```
+
+날짜를 바꾸면 새 날짜 위치로 옮겨지고, 옛 날짜 구간에서는 더 나오지 않습니다(중복 출력도 없음).
+
+```bash
+python -m budget_app update --id TX-9              # 날짜만 2024-06-01 로 입력하고 나머지는 엔터
+python -m budget_app list --limit 1                # 이제 TX-9 가 맨 위(가장 최신 날짜)
+python -m budget_app search --from 2023-12-01 --to 2023-12-31   # TX-9 가 나오지 않는다 (조건 오류 아님: 결과 없음)
+```
+
+삭제된 거래는 건너뛰고, `compact` 는 날짜 인덱스를 정리하며, 인덱스 파일은 지워도 자동으로 다시 만들어집니다.
+
+```bash
+python -m budget_app delete --id TX-9 --yes
+python -m budget_app compact
+wc -c data/transactions.date.idx                   # 살아있는 거래 수 × 12 바이트
+python -m budget_app list --all                    # 순서는 그대로
+rm data/transactions.date.idx                      # 인덱스 파일을 일부러 삭제
+python -m budget_app list --limit 3                # 다음 실행에서 자동으로 재생성되어 같은 결과
+ls data                                            # transactions.date.idx 가 다시 생겼다
+```
+
+실습이 끝나면 `rm -rf ./data import.csv export_*.csv none.csv old.csv` 로 정리하세요(`./data` 에는 실습 데이터만 들어 있어야 합니다).
 
 ---
 
 ## 4. 저장 파일 위치/형식
 
-기본 저장 폴더는 `./data` 이며 파일이 5개로 분리되어 있습니다(요구사항의 필수 3종 `transactions` / `categories` / `budgets` + 인덱스 `transactions.idx` + 보너스 `recurring.jsonl`).
+기본 저장 폴더는 `./data` 이며 파일이 6개로 분리되어 있습니다(요구사항의 필수 3종 `transactions` / `categories` / `budgets` + 인덱스 `transactions.idx`, `transactions.date.idx` + 보너스 `recurring.jsonl`).
 
 | 파일 | 역할 | 포맷 | 쓰기 방식 |
 |---|---|---|---|
 | `data/transactions.jsonl` | 거래 원본 데이터 | 텍스트, JSON 1줄 = 레코드 1개 | **append 전용** (수정도 새 버전을 끝에 추가) |
 | `data/transactions.idx` | id → 현재 유효 byte 위치 | 이진, 슬롯당 **16바이트** 고정폭 | 슬롯 단위 in-place 덮어쓰기 |
+| `data/transactions.date.idx` | (거래일자, id) 를 **날짜순으로 정렬**한 보조 인덱스 — 최신순 조회/기간 조회용 | 이진, 항목당 **12바이트** 고정폭 | 평소엔 끝에 append, 옛 날짜 거래는 병합 후 임시파일 + `os.replace` |
 | `data/categories.jsonl` | 카테고리 목록 | 텍스트 JSONL | 전체 재작성 (임시파일 + `os.replace`) |
 | `data/budgets.jsonl` | 월별 예산 | 텍스트 JSONL | 전체 재작성 (임시파일 + `os.replace`) |
 | `data/recurring.jsonl` | 반복 거래 규칙 (보너스) | 텍스트 JSONL | 전체 재작성 (임시파일 + `os.replace`) |
@@ -564,12 +602,13 @@ id N 의 슬롯 위치 = (N - 1) * 16                     # 슬롯의 "위치"�
 
 ### 연산별 동작
 
-| 연산 | `transactions.jsonl` | `transactions.idx` |
-|---|---|---|
-| `add` | 끝에 레코드 append | 16바이트 슬롯을 끝에 추가 |
-| `update` | 수정된 **전체 레코드를 끝에 append** (기존 줄은 그대로 방치) | 해당 id 슬롯을 새 offset 으로 덮어쓰기 |
-| `delete` | 아무것도 하지 않음 | 해당 id 슬롯 16바이트를 0으로 초기화 |
-| `compact` | 살아있는 레코드만 새 파일로 옮겨 쓰고 `os.replace` 로 교체 | 슬롯 개수·순서는 그대로, offset 값만 갱신 |
+| 연산 | `transactions.jsonl` | `transactions.idx` | `transactions.date.idx` |
+|---|---|---|---|
+| `add` | 끝에 레코드 append | 16바이트 슬롯을 끝에 추가 | 날짜가 마지막 항목 이상이면 끝에 append, 옛 날짜면 끼워 넣기(병합) |
+| `import` | 유효한 행을 한 번에 이어 쓰기(fsync 1회) | 슬롯을 한 번에 이어 쓰기 | 새 항목을 모아 **한 번에 병합** (O(n+m)) |
+| `update` | 수정된 **전체 레코드를 끝에 append** (기존 줄은 그대로 방치) | 해당 id 슬롯을 새 offset 으로 덮어쓰기 | **날짜가 바뀐 경우에만** 새 항목을 끼워 넣음(옛 항목은 읽을 때 건너뜀) |
+| `delete` | 아무것도 하지 않음 | 해당 id 슬롯 16바이트를 0으로 초기화 | 변경 없음(읽을 때 삭제된 슬롯이면 건너뜀) |
+| `compact` | 살아있는 레코드만 새 파일로 옮겨 쓰고 `os.replace` 로 교체 | 슬롯 개수·순서는 그대로, offset 값만 갱신 | 살아있는 거래만으로 **처음부터 재생성**(삭제/옛 항목 정리) |
 
 ### 왜 `compact` 가 필요한가
 
@@ -590,13 +629,35 @@ CLI는 `update`·`delete` 실행 직후 고아 데이터 비율을 확인해서,
 모르게 로그 파일 전체를 재작성하는 것보다 시점을 사용자가 직접 고르게 하는 편이
 안전하다고 판단했기 때문입니다.
 
-### 최신순 조회
+### 날짜 인덱스와 최신순 조회
 
-`transactions.idx` 는 고정폭 이진 파일이라 **역순 순회에 UTF-8 멀티바이트 경계 문제가 없습니다.**
-id 가 큰 슬롯부터 거꾸로 읽으면 별도 정렬 없이 최신순이 보장되고, 해당 byte 범위만 `seek` 해서 읽으므로
-파일 전체를 메모리에 올리지 않습니다. `list` / `search` / `summary` / `export` / `category remove`
-(사용 중 여부 판정) 모두 이 제너레이터 하나(`TransactionRepository.iter_latest_transactions()`)를
-소비하며, 필요한 만큼만 읽고 조기 종료합니다.
+"최신순"은 **거래일자 기준**(같은 날짜면 id 큰 순)입니다. 그런데 id 는 등록 순서라서, 옛 날짜 CSV 를
+import 하면 "id 는 가장 크지만 거래일자는 가장 오래된" 거래가 생깁니다. id 슬롯만 거꾸로 읽으면 그 거래가
+맨 위에 나오므로, 날짜 순서를 맡는 **`transactions.date.idx`** 를 따로 둡니다.
+
+```
+항목 = struct.pack("<IQ", date.toordinal(), id)            # 4B + 8B = 12B
+파일  = 항목들이 (날짜, id) 오름차순으로 정렬되어 있음
+```
+
+예) 기존 TX-1(10/01), TX-2(10/03) 에 9/05 거래를 import 해 TX-3 이 되면:
+
+```
+날짜 인덱스: [(09/05, 3), (10/01, 1), (10/03, 2)]
+list(끝에서 역순) → TX-2, TX-1, TX-3      ← id 는 TX-3 이 가장 크지만 날짜가 가장 오래돼 맨 아래
+```
+
+- **읽기**: `TransactionRepository.iter_latest_transactions()` 제너레이터가 날짜 인덱스를 **맨 끝부터 역순으로** 읽고,
+  항목마다 해당 id 레코드의 byte 범위만 `seek` 해서 읽습니다. 전체를 메모리에 올리지 않고 `--limit` 에서 멈추면
+  그 뒤는 읽지 않으므로(조기 종료) 거래가 수백만 건이어도 최신 N건은 빠릅니다.
+  삭제된 거래의 항목, 날짜가 바뀌기 전의 옛 항목은 레코드와 대조해 건너뜁니다.
+- **기간 조건**: `search --from/--to/--month`, `summary --month`, `export` 는 이진 탐색으로 그 기간 구간만 읽습니다
+  (전체 스캔 없음). 그 밖의 필터(카테고리/타입/메모/태그)는 읽은 레코드에 적용합니다.
+- **쓰기 비용**: 평소 add 는 끝에 append(O(1))입니다. 옛 날짜 거래는 병합이 필요한데, import 는 모아서 **한 번만**
+  병합(O(n+m))합니다.
+- **파생 데이터**: 날짜 인덱스는 `transactions.jsonl`/`idx` 에서 언제든 다시 만들 수 있습니다. 파일이 없거나 손상되면
+  (예: 이 인덱스가 생기기 전의 데이터 폴더) 다음 실행 때 **자동으로 재생성**하고, `compact` 도 재생성합니다.
+- `category remove` 의 사용 중 판정은 기간 조건이 없어 전체를 읽습니다.
 
 ---
 
@@ -681,7 +742,7 @@ budget_app/
 ├── formatter.py    외부 라이브러리 없는 표 정렬(전각 문자 폭 계산), 금액/막대 포맷
 └── decorators.py   handle_errors / log_call / timeit (functools.wraps 로 메타데이터 보존)
 tests/
-└── test_requirement_checklist.py  인수 테스트 — 9개 기능 시나리오 + 데코레이터/종료코드/포맷/원자성/보너스 (unittest 기반, 총 45개)
+└── test_requirement_checklist.py  인수 테스트 — 9개 기능 시나리오 + 데코레이터/종료코드/포맷/원자성/보너스 (unittest 기반, 총 51개)
 ```
 
 계층 책임은 **모델 → 저장소 → 서비스 → 커맨드 핸들러/CLI** 로 분리되어 있습니다.
@@ -704,6 +765,10 @@ tests/
   강제 종료되면 해당 슬롯이 손상될 이론적 가능성이 있습니다. WAL 같은 완전한 크래시 안전성은
   이 과제 범위 밖입니다. (쓰기 후 `fsync` 는 호출하며, 카테고리/예산 파일은 임시파일 + `os.replace`
   로 원자적으로 교체합니다.)
+- **날짜 인덱스 쓰기 순서**: 로그 → id 슬롯 → 날짜 항목 순으로 쓰므로, 그 사이에 프로세스가 죽으면 새 거래가 목록에서
+  빠져 보일 수 있습니다(데이터는 남아 있음). 파생 데이터라 `compact` 로 복구됩니다.
+- **인덱스 파일 증가**: id 를 재사용하지 않으므로 `transactions.idx` 는 지금까지 발급한 id 수 × 16바이트이고, 삭제는 크기를
+  줄이지 않습니다(0 슬롯으로 남음, `compact` 로도 그대로). 날짜 인덱스는 삭제/날짜 변경 항목이 `compact` 때까지 남습니다.
 - **로그 파일 증가**: `update` 가 쌓이면 `transactions.jsonl` 이 계속 커집니다. `compact` 명령으로
   정리할 수 있고, 고아 비율이 50% 를 넘으면 CLI 가 안내합니다.
 - **파일 크기 상한**: offset 이 8바이트(unsigned)라 이론상 로그 파일 상한은 사실상 무제한 수준이며,

@@ -40,9 +40,9 @@ class CsvService:
                 "--from 경로를 확인하세요.",
             )
         self.service.ensure_categories_exist()
-        imported = 0
         skipped = 0
         errors: list[tuple[int, str]] = []
+        valid: list[Transaction] = []
         with source.open("r", encoding="utf-8-sig", newline="") as fp:
             reader = csv.DictReader(fp)
             missing = [f for f in ("date", "type", "category", "amount") if f not in (reader.fieldnames or [])]
@@ -65,9 +65,10 @@ class CsvService:
                     skipped += 1
                     errors.append((lineno, exc.message))
                     continue
-                self.service.add(tx)
-                imported += 1
-        return ImportReport(imported=imported, skipped=skipped, errors=errors)
+                valid.append(tx)
+        # 검증을 통과한 행만 한 번에 저장한다(옛 날짜가 섞여 있어도 날짜 인덱스를 한 번만 병합)
+        self.service.add_many(valid)
+        return ImportReport(imported=len(valid), skipped=skipped, errors=errors)
 
     def export_csv(self, path: Path, transactions: Iterable[Transaction]) -> int:
         """거래를 CSV 로 내보내고 건수를 돌려준다."""

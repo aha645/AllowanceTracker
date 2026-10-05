@@ -6,9 +6,10 @@
 
 from __future__ import annotations
 
+import calendar
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterator
+from typing import Iterable, Iterator
 
 from .models import (
     TYPE_INCOME,
@@ -59,6 +60,20 @@ class SearchCriteria:
         if self.tag and self.tag not in tx.tags:
             return False
         return True
+
+    def date_bounds(self) -> tuple[str | None, str | None]:
+        """조건에서 뽑은 거래일자 범위(포함). --month 와 --from/--to 는 교집합으로 합친다.
+
+        저장소가 날짜 인덱스를 이진 탐색해 이 범위만 읽도록 넘기는 용도이며, 범위 밖 거래는 읽지 않는다.
+        """
+        low, high = self.date_from, self.date_to
+        if self.month:
+            year, mon = int(self.month[:4]), int(self.month[5:7])
+            first = f"{self.month}-01"
+            last = f"{self.month}-{calendar.monthrange(year, mon)[1]:02d}"
+            low = max(low, first) if low else first
+            high = min(high, last) if high else last
+        return low, high
 
     @property
     def is_empty(self) -> bool:
@@ -125,6 +140,10 @@ class TransactionService:
     def add(self, tx: Transaction) -> Transaction:
         return self.repo.append_transaction(tx)
 
+    def add_many(self, transactions: Iterable[Transaction]) -> list[Transaction]:
+        """여러 거래를 한 번에 저장한다(import 용: 날짜 인덱스를 한 번만 병합)."""
+        return self.repo.append_transactions(transactions)
+
     def update(
         self,
         tx_id: int,
@@ -166,15 +185,18 @@ class TransactionService:
     # ------------------------------------------------------------- 조회
     def iter_latest(self, limit: int | None = None) -> Iterator[Transaction]:
         """최신순 거래를 limit 건까지 스트리밍한다."""
-        for i, tx in enumerate(self.repo.iter_latest_transactions()):
-            if limit is not None and i >= limit:
-                return
+        if limit is not None and limit <= 0:
+            return
+        for count, tx in enumerate(self.repo.iter_latest_transactions(), start=1):
             yield tx
+            if limit is not None and count >= limit:
+                return  # limit 번째를 내보낸 직후 멈춘다(다음 레코드는 읽지 않는다)
 
     def search(self, criteria: SearchCriteria, limit: int | None = None) -> Iterator[Transaction]:
-        """조건에 맞는 거래를 최신순으로 스트리밍한다(AND 결합)."""
+        """조건에 맞는 거래를 거래일자 최신순으로 스트리밍한다(AND 결합, 기간 조건은 인덱스 범위로 제한)."""
         found = 0
-        for tx in self.repo.iter_latest_transactions():
+        date_from, date_to = criteria.date_bounds()
+        for tx in self.repo.iter_latest_transactions(date_from, date_to):
             if not criteria.matches(tx):
                 continue
             yield tx
@@ -195,9 +217,8 @@ class TransactionService:
         total_expense = 0
         count = 0
         by_category: dict[str, int] = {}
-        for tx in self.repo.iter_latest_transactions():
-            if tx.month != month:
-                continue
+        bounds = SearchCriteria(month=month).date_bounds()
+        for tx in self.repo.iter_latest_transactions(*bounds):  # 그 달 구간만 읽는다
             count += 1
             if tx.type == TYPE_INCOME:
                 total_income += tx.amount

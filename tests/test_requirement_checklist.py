@@ -18,6 +18,7 @@
     13x  저장 원자성 임시파일+교체 실패 시 원본 보존, 거래 로그 append 전용 + 인덱스 제자리 갱신
     14x  [보너스] backup     타임스탬프 폴더로 데이터 파일 복사
     15x  [보너스] recurring  반복 규칙 등록 → 월별 적용(말일 보정, 중복 방지) → 삭제
+    16x  날짜 인덱스  옛 날짜 거래/import 여도 list 가 거래일자 최신순, 조기 종료(limit), compact/삭제 후 복구
 
 시나리오 데이터 (모두 2024-01, 정상적인 수입/지출 조합):
     a  2024-01-05  expense  식비    12,000   점심      #외식      (대화형 add)
@@ -66,6 +67,7 @@ if _PROJECT_ROOT not in sys.path:
 
 from budget_app.cli import main
 from budget_app.commands.transaction import cmd_add
+from budget_app.repository import TransactionRepository
 from budget_app.stores import RecurringStore
 
 
@@ -89,7 +91,8 @@ class RequirementChecklistTestCase(unittest.TestCase):
     #: 개별 테스트만 따로 실행해도 앞선 실행이 남긴 데이터에서 id 를 복원할 수 있게 한다.
     SCENARIO_KEYS = {"a": ("2024-01-05", "식비"), "b": ("2024-01-10", "교통"),
                      "c": ("2024-01-25", "월급"), "d": ("2024-01-31", "월세"),
-                     "e": ("2024-03-01", "교통")}
+                     "e": ("2024-03-01", "교통"),
+                     "mid": ("2024-01-20", "식비"), "old": ("2023-12-15", "식비")}
 
     def setUp(self) -> None:
         sys.stdout.write(f"\n{'=' * 72}\n[{self._testMethodName}]\n{'=' * 72}\n")
@@ -597,6 +600,82 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(code, 0)
         _, out, _ = self.run_cli("recurring", "list")
         self.assertNotIn(self._id("rule"), out)
+
+    # ==================================================================
+    # 16x: 날짜 인덱스 — id(등록 순서)가 아니라 거래일자 순서로 최신순 조회
+    # ==================================================================
+    def _listed_ids(self) -> list[str]:
+        """`list --all` 표의 거래 id 를 위에서 아래(출력 순서)로 돌려준다."""
+        _, out, _ = self.run_cli("list", "--all")
+        return re.findall(r"^\s*\d+\s+(TX-\d+)\s", out, re.M)
+
+    def test_160_old_dated_transactions_do_not_jump_to_the_top(self) -> None:
+        # (1) 옛 날짜 CSV 를 import: 나중에 등록(id 가 가장 큼)하지만 거래일자는 가장 오래됨
+        source = self.data_dir / "old_import.csv"
+        source.write_text(
+            "date,type,category,amount,memo,tags\n2023-12-15,expense,식비,7000,날짜인덱스_옛거래,\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(self.run_cli("import", "--from", str(source))[0], 0)
+        # (2) 옛 날짜 거래를 옵션 add 로 한 건: 중간 날짜(c 와 a 사이)
+        self._add("mid", "2024-01-20", "expense", "식비", "3000", "날짜인덱스_중간")
+        _, out, _ = self.run_cli("search", "--q", "날짜인덱스_옛거래")
+        self.ids["old"] = self._extract_listed_id(out)
+
+        order = self._listed_ids()
+        self.assertGreater(int(self._id("old")[3:]), int(self._id("e")[3:]))  # 시나리오의 모든 거래보다 나중에 등록됨
+        self.assertEqual(order[-1], self._id("old"))  # id 는 가장 크지만 날짜가 가장 오래돼 맨 아래
+        self.assertLess(order.index(self._id("c")), order.index(self._id("mid")))  # 2024-01-25 > 2024-01-20
+        self.assertLess(order.index(self._id("mid")), order.index(self._id("a")))  # 2024-01-20 > 2024-01-05
+
+        _, out, _ = self.run_cli("list", "--limit", "1")  # 가장 최신 거래일자(2024-03-01)가 맨 위
+        self.assertTrue(self._has(out, self._id("e")))
+
+    @staticmethod
+    def _extract_listed_id(out: str) -> str:
+        match = re.search(r"^\s*\d+\s+(TX-\d+)\s", out, re.M)
+        assert match is not None, out
+        return match.group(1)
+
+    def test_161_update_date_moves_transaction_without_duplicates(self) -> None:
+        with self.fake_input(["2024-06-01", "", "", "", "", ""]):  # 날짜만 2023-12-15 → 2024-06-01
+            self.assertEqual(self.run_cli("update", "--id", self._id("old"))[0], 0)
+        order = self._listed_ids()
+        self.assertEqual(order[0], self._id("old"))  # 이제 가장 최신 날짜라 맨 위
+        self.assertEqual(order.count(self._id("old")), 1)  # 옛 날짜 항목이 남아 중복 출력되지 않음
+        _, out, _ = self.run_cli("search", "--from", "2023-12-01", "--to", "2023-12-31")
+        self.assertFalse(self._has(out, self._id("old")))  # 옛 날짜 구간에서는 더 이상 안 나옴
+
+    def test_162_deleted_transaction_is_skipped(self) -> None:
+        self.assertEqual(self.run_cli("delete", "--id", self._id("old"), "--yes")[0], 0)
+        self.assertNotIn(self._id("old"), self._listed_ids())
+
+    def test_163_list_with_limit_reads_only_that_many_records(self) -> None:
+        reads: list[int] = []
+        original = TransactionRepository._read_at
+
+        def counting(repo, fp, start, end):  # type: ignore[no-untyped-def]
+            reads.append(start)
+            return original(repo, fp, start, end)
+
+        with mock.patch.object(TransactionRepository, "_read_at", counting):
+            code, _, _ = self.run_cli("list", "--limit", "2")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(reads), 2)  # 전체가 아니라 최신 2건만 읽고 멈춘다
+
+    def test_164_compact_cleans_date_index_and_keeps_order(self) -> None:
+        before = self._listed_ids()
+        self.assertEqual(self.run_cli("compact")[0], 0)
+        self.assertEqual(self._listed_ids(), before)  # 순서 그대로
+        date_idx = self.data_dir / "transactions.date.idx"
+        self.assertEqual(date_idx.stat().st_size, len(before) * 12)  # 삭제/옛 날짜 항목이 정리됨(항목당 12바이트)
+
+    def test_165_missing_date_index_is_rebuilt_automatically(self) -> None:
+        before = self._listed_ids()
+        date_idx = self.data_dir / "transactions.date.idx"
+        date_idx.unlink()  # 예: 이 인덱스가 생기기 전의 데이터 폴더
+        self.assertEqual(self._listed_ids(), before)  # 다음 실행에서 원본으로부터 자동 재생성
+        self.assertEqual(date_idx.stat().st_size, len(before) * 12)
 
 
 if __name__ == "__main__":
