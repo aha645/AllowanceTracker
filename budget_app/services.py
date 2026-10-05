@@ -1,22 +1,16 @@
-"""비즈니스 로직: 입력 검증, 검색/필터, 월별 요약, 예산 계산, CSV 변환, 백업.
+"""비즈니스 로직: 거래 CRUD·검색·월별 요약, 예산 계산, 반복 거래 규칙.
 
 저장 방식(파일 포맷)은 repository/stores 가, 사용자 입출력은 cli 가 맡는다.
-이 모듈은 그 사이에서 "규칙"만 담당한다.
+이 모듈은 그 사이에서 "규칙"만 담당한다. 입력 검증은 validators, CSV/백업은 file_services.
 """
 
 from __future__ import annotations
 
-import csv
-import shutil
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Iterator
 
 from .models import (
-    DATE_FORMAT,
-    MONTH_FORMAT,
-    TRANSACTION_TYPES,
     TYPE_INCOME,
     Budget,
     MonthlySummary,
@@ -26,107 +20,15 @@ from .models import (
 )
 from .repository import TransactionRepository
 from .stores import BudgetStore, CategoryStore, RecurringStore
-
-CSV_FIELDS: tuple[str, ...] = ("date", "type", "category", "amount", "memo", "tags")
-
-
-# --------------------------------------------------------------------- 검증
-def validate_date(value: str) -> str:
-    """`YYYY-MM-DD` 형식인지 검증하고 정규화한 문자열을 돌려준다."""
-    text = (value or "").strip()
-    try:
-        parsed = datetime.strptime(text, DATE_FORMAT)
-    except ValueError as exc:
-        raise ValidationError(
-            f"날짜 형식이 올바르지 않습니다: '{value}'",
-            "YYYY-MM-DD 형식으로 입력하세요. 예: 2024-01-15",
-        ) from exc
-    normalized = parsed.strftime(DATE_FORMAT)
-    if normalized != text:  # 2024-1-5 처럼 자릿수가 어긋난 입력은 거부
-        raise ValidationError(
-            f"날짜는 자릿수를 맞춰야 합니다: '{value}'",
-            f"YYYY-MM-DD 형식으로 입력하세요. 예: {normalized}",
-        )
-    return normalized
-
-
-def validate_month(value: str) -> str:
-    """`YYYY-MM` 형식인지 검증하고 정규화한 문자열을 돌려준다."""
-    text = (value or "").strip()
-    try:
-        parsed = datetime.strptime(text, MONTH_FORMAT)
-    except ValueError as exc:
-        raise ValidationError(
-            f"월 형식이 올바르지 않습니다: '{value}'",
-            "YYYY-MM 형식으로 입력하세요. 예: 2024-01",
-        ) from exc
-    normalized = parsed.strftime(MONTH_FORMAT)
-    if normalized != text:  # 2024-1 처럼 자릿수가 어긋난 입력은 거부
-        raise ValidationError(
-            f"월은 자릿수를 맞춰야 합니다: '{value}'",
-            f"YYYY-MM 형식으로 입력하세요. 예: {normalized}",
-        )
-    return normalized
-
-
-def validate_type(value: str) -> str:
-    """`income` / `expense` 만 허용한다."""
-    text = (value or "").strip().lower()
-    if text not in TRANSACTION_TYPES:
-        raise ValidationError(
-            f"타입이 올바르지 않습니다: '{value}'",
-            f"{' 또는 '.join(TRANSACTION_TYPES)} 중 하나를 입력하세요.",
-        )
-    return text
-
-
-def validate_amount(value: str | int) -> int:
-    """0보다 큰 정수만 허용한다(쉼표 포함 입력 허용)."""
-    text = str(value).strip().replace(",", "")
-    try:
-        amount = int(text)
-    except ValueError as exc:
-        raise ValidationError(
-            f"금액은 정수여야 합니다: '{value}'",
-            "숫자만 입력하세요. 예: 12000",
-        ) from exc
-    if amount <= 0:
-        raise ValidationError(
-            f"금액은 0보다 커야 합니다: {amount}",
-            "지출/수입 구분은 --type 으로 하고, 금액은 항상 양수로 입력하세요.",
-        )
-    return amount
-
-
-def validate_day(value: str | int) -> int:
-    """반복 규칙용 일자(1~31)."""
-    text = str(value).strip()
-    try:
-        day = int(text)
-    except ValueError as exc:
-        raise ValidationError(
-            f"일자는 정수여야 합니다: '{value}'", "1~31 사이의 숫자를 입력하세요."
-        ) from exc
-    if not 1 <= day <= 31:
-        raise ValidationError(f"일자는 1~31 사이여야 합니다: {day}", "예: --day 25")
-    return day
-
-
-def parse_tags(value: str | None) -> list[str]:
-    """쉼표 구분 문자열을 태그 리스트로 바꾼다(공백 제거, 빈 값·중복 제거)."""
-    if not value:
-        return []
-    tags: list[str] = []
-    for raw in value.split(","):
-        tag = raw.strip()
-        if tag and tag not in tags:
-            tags.append(tag)
-    return tags
-
-
-def format_tags(tags: list[str]) -> str:
-    """태그 리스트를 CSV/화면용 쉼표 구분 문자열로 바꾼다."""
-    return ",".join(tags)
+from .validators import (
+    format_tags,
+    parse_tags,
+    validate_amount,
+    validate_date,
+    validate_day,
+    validate_month,
+    validate_type,
+)
 
 
 @dataclass(slots=True)
@@ -361,105 +263,6 @@ class BudgetService:
         if budget is None:
             return None
         return BudgetUsage(month=month, budget=budget.amount, spent=spent)
-
-
-@dataclass(slots=True)
-class ImportReport:
-    """CSV 가져오기 결과."""
-
-    imported: int
-    skipped: int
-    errors: list[tuple[int, str]]
-
-
-class CsvService:
-    """CSV 가져오기/내보내기. 스키마는 date,type,category,amount,memo,tags 고정(UTF-8, 헤더 포함)."""
-
-    def __init__(self, service: TransactionService) -> None:
-        self.service: TransactionService = service
-
-    def import_csv(self, path: Path) -> ImportReport:
-        """행 단위로 검증하며 가져온다. 실패한 행은 건너뛰고 사유를 모아 돌려준다."""
-        source = Path(path)
-        if not source.exists():
-            raise ValidationError(
-                f"가져올 CSV 파일이 없습니다: {source}",
-                "--from 경로를 확인하세요.",
-            )
-        self.service.ensure_categories_exist()
-        imported = 0
-        skipped = 0
-        errors: list[tuple[int, str]] = []
-        with source.open("r", encoding="utf-8-sig", newline="") as fp:
-            reader = csv.DictReader(fp)
-            missing = [f for f in ("date", "type", "category", "amount") if f not in (reader.fieldnames or [])]
-            if missing:
-                raise ValidationError(
-                    f"CSV 헤더에 필수 컬럼이 없습니다: {', '.join(missing)}",
-                    f"헤더는 {','.join(CSV_FIELDS)} 형식이어야 합니다.",
-                )
-            for lineno, row in enumerate(reader, start=2):
-                try:
-                    tx = self.service.build_transaction(
-                        date=row.get("date", ""),
-                        type_=row.get("type", ""),
-                        category=row.get("category", ""),
-                        amount=row.get("amount", ""),
-                        memo=row.get("memo", "") or "",
-                        tags=row.get("tags", "") or "",
-                    )
-                except ValidationError as exc:
-                    skipped += 1
-                    errors.append((lineno, exc.message))
-                    continue
-                self.service.add(tx)
-                imported += 1
-        return ImportReport(imported=imported, skipped=skipped, errors=errors)
-
-    def export_csv(self, path: Path, transactions: Iterable[Transaction]) -> int:
-        """거래를 CSV 로 내보내고 건수를 돌려준다."""
-        target = Path(path)
-        if target.parent and not target.parent.exists():
-            target.parent.mkdir(parents=True, exist_ok=True)
-        count = 0
-        with target.open("w", encoding="utf-8", newline="") as fp:
-            writer = csv.DictWriter(fp, fieldnames=list(CSV_FIELDS))
-            writer.writeheader()
-            for tx in transactions:
-                writer.writerow(
-                    {
-                        "date": tx.date,
-                        "type": tx.type,
-                        "category": tx.category,
-                        "amount": tx.amount,
-                        "memo": tx.memo,
-                        "tags": format_tags(tx.tags),
-                    }
-                )
-                count += 1
-        return count
-
-
-class BackupService:
-    """data 폴더 전체를 타임스탬프 폴더로 복사하는 백업(보너스)."""
-
-    BACKUP_DIR_NAME = "backup"
-
-    def __init__(self, data_dir: Path) -> None:
-        self.data_dir: Path = Path(data_dir)
-
-    def create(self) -> tuple[Path, list[str]]:
-        """`data/backup/YYYYmmdd_HHMMSS/` 로 데이터 파일을 복사한다."""
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        target = self.data_dir / self.BACKUP_DIR_NAME / stamp
-        target.mkdir(parents=True, exist_ok=True)
-        copied: list[str] = []
-        for item in sorted(self.data_dir.iterdir()):
-            if item.is_dir() or item.name.endswith(".tmp"):
-                continue
-            shutil.copy2(item, target / item.name)
-            copied.append(item.name)
-        return target, copied
 
 
 class RecurringService:

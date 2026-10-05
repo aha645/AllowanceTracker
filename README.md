@@ -26,7 +26,7 @@ python -m budget_app --verbose list      # 실행 로그/시간 측정 출력(�
 
 ### 테스트 실행
 
-외부 라이브러리 없이 표준 `unittest`로 작성되어 있고(총 143개), **두 계층**으로 나뉩니다.
+외부 라이브러리 없이 표준 `unittest`로 작성되어 있고(총 142개), **두 계층**으로 나뉩니다.
 
 | 계층 | 파일 | 무엇을 검증하는가 | 호출 방식 |
 |---|---|---|---|
@@ -39,6 +39,9 @@ python -m budget_app --verbose list      # 실행 로그/시간 측정 출력(�
 엔드투엔드 회귀 시나리오도 별도로 유지합니다. 기능 테스트와 항목이 겹치는 단순
 검증은 `test_cli.py`에서 제거했습니다(예: 카테고리 미등록 add 차단, 없는 id delete
 등은 `test_requirement_checklist.py`에만 있습니다).
+
+기능 테스트는 `tests/data` 폴더 하나를 공유하며 **실행을 시작할 때 이 폴더를 비우고** 번호 순서대로
+데이터를 쌓습니다(끝난 뒤에는 수동 확인용으로 남겨 두므로 몇 번 다시 실행해도 같은 결과입니다).
 
 ```bash
 # 전체 테스트 자동 탐색 실행 (가장 흔히 쓰는 방법)
@@ -59,8 +62,7 @@ python tests/test_repository.py -v
 
 ### VSCode 테스트 탭(비커 아이콘) 활성화하기
 
-새 컴퓨터에서 이 프로젝트를 받아 VSCode 테스트 탭("테스트 실행" + "적용 범위로 테스트
-실행")까지 쓸 수 있게 만드는 전체 과정을 **1단계(환경 구축) → 2단계(VSCode에서
+새 컴퓨터에서 이 프로젝트를 받아 VSCode 테스트 탭까지 쓸 수 있게 만드는 전체 과정을 **1단계(환경 구축) → 2단계(VSCode에서
 테스트 실행)** 순서로 정리하면 다음과 같습니다.
 
 > 참고: `uv venv`로 만드는 가상환경(`.venv`)은 프로젝트 폴더 **안에** 있어야 하는데,
@@ -98,12 +100,7 @@ uv venv .venv --python 3.10
 # 3) 가상환경 활성화 — 이후 이 터미널의 python/pip/uv 는 전부 이 .venv 를 가리킴
 source .venv/bin/activate
 
-# 4) "적용 범위로 테스트 실행" 버튼에 필요한 coverage 설치
-#    (uv 로 만든 venv는 기본적으로 pip 가 없으므로 uv pip install 로 설치.
-#     activate 된 상태라 --python 옵션 없이 바로 이 venv 에 들어간다)
-uv pip install coverage
-
-# 5) 활성화된 이 콘솔에서 VSCode 열기 (현재 폴더를 워크스페이스로 오픈)
+# 4) 활성화된 이 콘솔에서 VSCode 열기 (현재 폴더를 워크스페이스로 오픈)
 code .
 ```
 
@@ -142,11 +139,9 @@ VSCode가 열리면 아래 순서로 테스트 탭을 활성화합니다.
    하지 않는 이유는, 그 경로가 사람·컴퓨터마다 다르기 때문입니다 — 대신 매번 이 선택
    UI로 지정합니다.
 
-3. **좌측 액티비티바의 테스트(비커) 아이콘 클릭** → `tests/` 아래 3개 파일이 트리로
+3. **좌측 액티비티바의 테스트(비커) 아이콘 클릭** → `tests/` 아래 5개 파일이 트리로
    나타나면 성공. 각 테스트 옆 ▶(실행) 또는 🐛(디버그) 버튼으로 개별 실행/디버깅이
-   가능하고, 트리 상단의 **"적용 범위로 테스트 실행"** 버튼을 누르면(2)단계에서
-   `coverage`를 이미 설치해 뒀으므로) 파일별 커버리지 비율과 에디터의 줄 번호 옆
-   초록(실행됨)/빨강(테스트가 건드리지 않음) 표시까지 바로 볼 수 있습니다.
+   가능합니다.
 
 **문제가 안 풀릴 때 체크리스트**
 
@@ -155,7 +150,6 @@ VSCode가 열리면 아래 순서로 테스트 탭을 활성화합니다.
 | 테스트 탭에 아무것도 안 뜸 | 테스트 탭 새로고침(↻) 버튼, 또는 `Cmd+Shift+P` → `Test: Refresh Tests` |
 | 코드를 고쳤는데 옛날 테스트 이름이 그대로 보임 | 위와 동일 + 그래도 안 되면 `Cmd+Shift+P` → `Developer: Reload Window` |
 | `dataclass() got an unexpected keyword argument 'slots'` 에러 | 3.9가 선택된 상태 → `Python: Select Interpreter` 로 `.venv`(3.10) 재선택 |
-| "적용 범위로 테스트 실행" 시 `ModuleNotFoundError: No module named 'coverage'` | 선택된 인터프리터에 `coverage`가 없음 → 그 인터프리터가 가리키는 `.venv`에 `uv pip install coverage` (또는 `uv pip install --python <경로> coverage`) |
 | 원인을 못 찾겠을 때 | 하단 `Output` 패널 → 드롭다운에서 `Python` 또는 `Python Test Log` 선택해서 실제 에러 확인 |
 
 `.venv/`는 `.gitignore`에 포함되어 있어 커밋되지 않습니다.
@@ -384,8 +378,18 @@ date,type,category,amount,memo,tags
 ```
 budget_app/
 ├── __main__.py     python -m budget_app 진입점 (종료 코드 전달)
-├── cli.py          argparse 서브커맨드 정의, 대화형 입력, 출력 포맷팅
-├── services.py     검증·검색·요약·예산 계산·CSV 변환·백업·반복규칙 (비즈니스 로직)
+├── cli.py          argparse 파서 정의 + main (커맨드 ↔ 핸들러 연결만 담당)
+├── context.py      AppContext — 저장소/서비스 조립
+├── console.py      핸들러 공용 입출력(오류 출력, id 파싱, 재입력 루프, 거래 표 출력)
+├── commands/       커맨드 핸들러 (서브커맨드 1개 = 함수 1개)
+│   ├── transaction.py  add / list / search / update / delete
+│   ├── report.py       summary / budget set·show·list·remove
+│   ├── category.py     category add / list / remove
+│   ├── data.py         import / export / compact / backup
+│   └── recurring.py    recurring add / list / remove / apply
+├── validators.py   입력 검증·정규화(날짜/월/타입/금액/일자/태그)
+├── services.py     거래 CRUD·검색·월별 요약, 예산 계산, 반복규칙 (비즈니스 로직)
+├── file_services.py  CSV 가져오기/내보내기, 백업
 ├── repository.py   TransactionRepository / TransactionIndex (append-only 로그 + 이진 인덱스)
 ├── stores.py       JsonlStore / CategoryStore / BudgetStore / RecurringStore
 ├── models.py       Transaction·Category·Budget·RecurringRule dataclass, 커스텀 예외
@@ -397,10 +401,10 @@ tests/
 ├── test_services.py               단위테스트 — 검증 함수 + 서비스(검색/요약/예산/CSV/반복규칙)
 ├── test_formatter.py              단위테스트 — 표 정렬 포맷터
 └── test_cli.py                    단위테스트 — CLI 인자 파싱/오류 처리/대화형 입력 + 회귀 시나리오(기능 테스트와 겹치지 않는 엣지케이스만)
-                         (unittest 기반, 총 83개)
+                         (unittest 기반, 총 142개)
 ```
 
-계층 책임은 **모델 → 저장소 → 서비스 → CLI** 로 분리되어 있습니다.
+계층 책임은 **모델 → 저장소 → 서비스 → 커맨드 핸들러/CLI** 로 분리되어 있습니다.
 저장 방식(파일 포맷)은 `repository`/`stores` 만 알고, 규칙은 `services` 가, 사람과의 입출력은
 `cli` 가 담당합니다. 모든 공개 함수/메서드에 타입 힌트가 붙어 있습니다.
 

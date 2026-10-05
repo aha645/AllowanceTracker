@@ -21,7 +21,8 @@
     15x (150~153)  저장 원자성 — categories/budgets 임시파일+rename, transactions
                    append-only 로그 + 인덱스 제자리 수정/삭제
 
-모든 테스트가 tests/data 폴더 하나를 공유하며 번호 순서대로 실행된다(unittest
+모든 테스트가 tests/data 폴더 하나를 공유하며 번호 순서대로 실행된다(실행 시작 시
+폴더를 비우고 시작하므로 몇 번을 다시 실행해도 같은 결과가 나온다)(unittest
 기본 정렬이 zero-padding 덕분에 번호 순서와 일치함). 데이터가 테스트 사이에
 계속 누적되므로, 실행이 끝난 뒤 tests/data 를 열어보면 요구사항 번호 순서대로
 쌓인 시나리오 결과를 그대로 확인할 수 있다.
@@ -45,6 +46,7 @@ from __future__ import annotations
 import io
 import itertools
 import re
+import shutil
 import sys
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
@@ -90,6 +92,9 @@ class RequirementChecklistTestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        # 이전 실행의 누적 데이터가 남아 있으면 "빈 상태" 시나리오가 깨지므로
+        # 실행 시작 시점에만 초기화한다(실행 후에는 수동 확인용으로 남겨 둔다).
+        shutil.rmtree(cls._DATA_ROOT, ignore_errors=True)
         cls._DATA_ROOT.mkdir(parents=True, exist_ok=True)
 
     def setUp(self) -> None:
