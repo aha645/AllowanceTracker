@@ -262,6 +262,271 @@ $ python -m budget_app summary --month 2024-02
 
 ---
 
+## 3-1. 직접 따라 해보기 (테스트 시나리오와 동일)
+
+`tests/test_requirement_checklist.py` 가 자동으로 실행하는 시나리오를 손으로 그대로 입력해 볼 수 있도록
+정리했습니다. 위에서 아래로 **순서대로** 입력하면 앞 단계에서 만든 데이터를 뒤 단계가 이어받습니다
+(`TX-1`~`TX-5` 라는 id 도 이 순서대로 만들었을 때 기준입니다).
+
+### 준비
+
+`--data-dir` 를 따로 주지 않으므로 데이터는 기본 저장 폴더 `./data` 에 자동으로 만들어집니다
+(첫 실행 시 폴더와 파일이 자동 생성). 처음부터 시작하려면(= `test_000_reset_data`) 기존 데이터 폴더를 지웁니다.
+
+```bash
+rm -rf ./data      # ⚠ 지금까지 입력한 실제 데이터가 모두 사라집니다. 지워도 되는 상태에서만 실행하세요.
+```
+
+> 메모처럼 **공백이 들어간 값은 따옴표**로 감싸세요(예: `--memo "1월 급여"`). import/export 용 CSV 파일은
+> 데이터 폴더 밖(현재 폴더)에 만듭니다. 아래 명령은 모두 프로젝트 폴더에서 `python -m budget_app ...` 로 입력합니다.
+
+### 1) 사전 준비 — 카테고리 없이 add 는 막히고, 카테고리를 등록하면 된다 (00x)
+
+```bash
+python -m budget_app add                                  # [오류] 등록된 카테고리가 없습니다. + [힌트] → 종료 코드 1
+python -m budget_app category add --name 식비             # [저장 완료] 카테고리 '식비' 추가
+python -m budget_app category add --name 교통
+python -m budget_app category add --name 월급
+python -m budget_app category add --name 월세
+```
+
+### 2) add — 대화형 1건 + 옵션 3건 (01x)
+
+대화형: `python -m budget_app add` 를 실행하고 프롬프트에 아래 값을 차례로 입력합니다.
+
+```bash
+python -m budget_app add
+```
+| 프롬프트 | 입력 |
+|---|---|
+| 날짜 | `2024-01-05` |
+| 타입 | `expense` |
+| 카테고리 (번호 또는 이름) | `식비` |
+| 금액 | `12000` |
+| 메모 | `점심` |
+| 태그 | `외식` |
+
+→ `[저장 완료] id=TX-1`
+
+옵션 방식(프롬프트 없이 한 줄):
+
+```bash
+python -m budget_app add --date 2024-01-10 --type expense --category 교통 --amount 20000 --memo "지하철"      # id=TX-2
+python -m budget_app add --date 2024-01-25 --type income  --category 월급 --amount 3000000 --memo "1월 급여"   # id=TX-3
+python -m budget_app add --date 2024-01-31 --type expense --category 월세 --amount 500000 --memo "1월 월세"    # id=TX-4
+```
+
+**잘못된 입력은 저장되지 않고 오류가 나는지 확인** (모두 거래가 늘지 않아야 함):
+
+```bash
+python -m budget_app add --date 2024-13-40 --type expense --category 식비 --amount 1000        # 날짜 형식 오류 → 종료 코드 1
+python -m budget_app add --date 2024-01-01 --type expense --category 식비 --amount -500        # 음수 금액 → 1
+python -m budget_app add --date 2024-01-01 --type expense --category 식비 --amount 0           # 0 금액 → 1
+python -m budget_app add --date 2024-01-01 --type transfer --category 식비 --amount 1000       # 허용되지 않은 type → 종료 코드 2 (argparse)
+python -m budget_app add --date 2024-01-01 --type expense --category 없는카테고리 --amount 1000  # 미등록 카테고리 → 1
+```
+
+**대화형에서는 잘못 입력해도 다시 묻는지 확인** — 아래 순서로 입력합니다. 오류 메시지가 3번 나오고 마지막에
+저장됩니다(`id=TX-5`). 이 거래(2024-03, 교통, 1,500원)는 이후 단계에서 "가장 최근 거래"로 쓰입니다.
+
+| 프롬프트 | 입력 | 결과 |
+|---|---|---|
+| 날짜 | `2024-13-40` | 오류 → 다시 묻는다 |
+| 날짜 | `2024-03-01` | |
+| 타입 | `expense` | |
+| 카테고리 | `없는것` | 오류 → 다시 묻는다 |
+| 카테고리 | `교통` | |
+| 금액 | `-1` | 오류 → 다시 묻는다 |
+| 금액 | `1500` | |
+| 메모 / 태그 | (엔터, 엔터) | `[저장 완료] id=TX-5` |
+
+### 3) list — 최신순, `--limit`, `--limit` 과 `--all` 은 함께 못 쓴다 (02x)
+
+```bash
+python -m budget_app list                    # 5건. TX-5, TX-4, TX-3, TX-2, TX-1 순서(나중에 등록한 것이 위)
+python -m budget_app list --limit 2          # 최근 2건(TX-5, TX-4)만 + "[완료] 2건 출력 / 전체 5건"
+python -m budget_app list --limit 5 --all    # error: argument --all: not allowed with argument --limit → 종료 코드 2
+```
+
+### 4) search — 조건별 필터, AND 결합, 조건 없음은 오류 (03x)
+
+```bash
+python -m budget_app search --from 2024-01-10 --to 2024-01-25     # 기간 → TX-3, TX-2
+python -m budget_app search --category 식비                        # 카테고리 → TX-1
+python -m budget_app search --type income                          # 타입 → TX-3
+python -m budget_app search --q 지하철                             # 메모 키워드 → TX-2
+python -m budget_app search --tag 외식                             # 태그 → TX-1
+python -m budget_app search --type expense --from 2024-01-01 --to 2024-01-31 --category 월세   # AND 결합 → TX-4 만
+python -m budget_app search                                        # [오류] 검색 조건이 하나도 지정되지 않았습니다. → 1
+```
+
+### 5) summary — 수입/지출/잔액, TOP N, 데이터 없는 달 (04x)
+
+```bash
+python -m budget_app summary --month 2024-01 --top 2
+```
+```
+[2024-01 요약]
+  총 수입  3,000,000원
+  총 지출  532,000원            ← 12,000 + 20,000 + 500,000
+  잔액     2,468,000원  (거래 4건)
+
+[카테고리별 지출 TOP 2]        ← 큰 순서: 월세, 교통 (식비는 TOP 2 밖이라 나오지 않음)
+```
+```bash
+python -m budget_app summary --month 2023-12     # "데이터 없음" 이 분명하게 출력된다
+```
+
+### 6) budget — 설정 → 사용률 → 덮어쓰기 → 초과 경고 (05x)
+
+```bash
+python -m budget_app budget set --month 2024-01 --amount 600000
+python -m budget_app summary --month 2024-01        # 사용 532,000원 (88.7%) [##################..] / 잔여 68,000원 — 경고 없음
+python -m budget_app budget set --month 2024-01 --amount 500000    # "기존 예산 600,000원을 덮어썼습니다."
+python -m budget_app summary --month 2024-01        # 사용 532,000원 (106.4%) / [경고] 예산을 32,000원 초과했습니다!
+python -m budget_app budget set --month 2024-01 --amount 0         # [오류] 금액은 0보다 커야 합니다 → 1
+```
+
+### 7) category — 중복 차단, 목록, 사용 중인 카테고리는 삭제 불가 (06x)
+
+```bash
+python -m budget_app category add --name 여가       # 저장 완료
+python -m budget_app category add --name 식비       # [오류] ... 이미 등록되어 있습니다. → 1
+python -m budget_app category list                  # 5개(식비, 교통, 월급, 월세, 여가)
+python -m budget_app category remove --name 식비    # [오류] ... 사용 중이라 삭제할 수 없습니다 → 1  (거래 TX-1 이 쓰는 중)
+python -m budget_app category remove --name 여가    # [삭제 완료] (아무 거래도 안 쓰므로 삭제됨)
+python -m budget_app category remove --name 없는카테고리   # [오류] 찾을 수 없습니다 → 1
+```
+
+### 8) update — 대화형 수정 (07x)
+
+`TX-1`(식비 12,000원, 메모 "점심", 태그 "외식")을 수정합니다. 현재 값이 먼저 표시되고, **엔터 = 기존 값 유지,
+`-` = 메모/태그 비우기** 입니다.
+
+```bash
+python -m budget_app update --id TX-1
+```
+| 프롬프트 | 입력 | 의미 |
+|---|---|---|
+| 날짜 / 타입 / 카테고리 | (엔터 ×3) | 유지 |
+| 금액 `[12000]` | `15000` | 12,000 → 15,000 |
+| 메모 `[점심]` | `-` | 메모 비움 |
+| 태그 `[외식]` | (엔터) | 유지 |
+
+→ `[수정 완료] id=TX-1` + 변경된 필드 표(`amount`, `memo`)
+
+```bash
+python -m budget_app search --category 식비         # 금액 -15,000, 메모 없음, 태그 "외식" 유지
+python -m budget_app summary --month 2024-01        # 총 지출 535,000원 (15,000 + 20,000 + 500,000)
+python -m budget_app update --id TX-999999          # [오류] TX-999999 거래를 찾을 수 없습니다. → 1 (입력 프롬프트로 가지 않음)
+```
+
+### 9) delete — 삭제가 list/summary 에 반영된다 (08x)
+
+```bash
+python -m budget_app delete --id TX-2 --yes         # [삭제 완료] id=TX-2 (2024-01-10 교통 20,000원)   (--yes 없으면 y/N 확인)
+python -m budget_app list                           # TX-2 가 사라진다(4건)
+python -m budget_app summary --month 2024-01        # 총 지출 515,000원 (교통 20,000 제외)
+python -m budget_app delete --id TX-2 --yes         # [오류] 거래를 찾을 수 없습니다 → 1 (이미 삭제됨)
+python -m budget_app delete --id TX-999999 --yes    # [오류] → 1 (없는 id)
+```
+
+### 10) import / export (09x)
+
+**import** — 현재 폴더에 `import.csv` 를 만듭니다(4행 중 2행만 유효):
+
+```bash
+cat > import.csv <<'CSV'
+date,type,category,amount,memo,tags
+2024-02-05,expense,식비,8000,"점심, 회사 근처","외식,점심"
+2024-02-25,income,월급,3000000,2월 급여,
+2024-02-10,expense,없는카테고리,5000,,
+2024-02-11,expense,식비,-100,,
+CSV
+
+python -m budget_app import --from import.csv
+```
+```
+[완료] import.csv → imported=2, skipped=2
+
+[건너뛴 행]
+행  사유
+ 4  등록되지 않은 카테고리입니다: '없는카테고리'
+ 5  금액은 0보다 커야 합니다: -100
+```
+```bash
+python -m budget_app summary --month 2024-02        # 총 수입 3,000,000원 / 총 지출 8,000원 (가져온 데이터가 반영됨)
+```
+
+**export** — 월 단위 / 기간 단위로 내보내고, 조건이 없으면 거부됩니다.
+
+```bash
+python -m budget_app export --out export_2024_02.csv --month 2024-02                    # [완료] ... (2 records)
+cat export_2024_02.csv             # 헤더 date,type,category,amount,memo,tags + 2행. "점심, 회사 근처" 처럼 쉼표가 든 메모도 그대로
+python -m budget_app export --out export_range.csv --from 2024-01-01 --to 2024-01-31    # (3 records) ← 식비(15000, 수정 반영), 월급, 월세. 삭제한 교통은 없음
+python -m budget_app export --out none.csv          # [오류] 내보내기 조건이 없습니다. → 1
+ls data                       # budgets.jsonl categories.jsonl transactions.jsonl (+ transactions.idx, recurring.jsonl) 영구 저장 확인
+```
+
+### 11) 데코레이터 · 종료 코드 · 표 포맷 (10x ~ 12x)
+
+```bash
+python -m budget_app --verbose list      # 표 아래에 [log] -> cmd_list 시작 / [log] cmd_list 실행 시간 ...ms / [log] <- cmd_list 종료 (stderr)
+python -m budget_app list                # --verbose 가 없으면 [log] 줄이 나오지 않는다
+```
+
+종료 코드는 직전 명령 직후 `echo $?` 로 확인합니다.
+
+```bash
+python -m budget_app list; echo $?                          # 0   정상
+python -m budget_app delete --id TX-999999 --yes; echo $?   # 1   [오류] + [힌트] 가 나오고 Traceback(스택트레이스)은 없다
+python -m budget_app add                                    # 프롬프트에서 Ctrl+C 를 누른다 → "[중단] 사용자가 입력을 취소했습니다."
+echo $?                                                     # 130
+```
+
+표 포맷 확인: `python -m budget_app list` 결과에서 ① 헤더 아래 구분선(`-  ----  ---`) ② 수입 `+3,000,000` / 지출 `-500,000` 부호와 천 단위 구분
+③ `python -m budget_app summary --month 2024-01` 의 예산 막대 `[####################]` 를 눈으로 확인합니다.
+
+### 12) 저장 원자성 — 로그는 덧붙이기만, 인덱스는 제자리 갱신 (13x)
+
+`transactions.jsonl` 의 줄 수와 `transactions.idx` 의 크기를 기록해 두고 수정/삭제 전후를 비교합니다.
+
+```bash
+wc -l data/transactions.jsonl; wc -c data/transactions.idx     # 예: 8줄, 112바이트
+
+python -m budget_app update --id TX-1               # 금액만 16000 으로 바꾼다(나머지는 엔터)
+wc -l data/transactions.jsonl; wc -c data/transactions.idx     # 줄 수 +1 (새 버전이 끝에 append), idx 크기는 그대로
+tail -2 data/transactions.jsonl     # 맨 끝줄이 TX-1 의 새 버전(amount 16000), 바로 앞에 다른 거래 줄 — 옛 버전은 위쪽에 남아 있음
+
+python -m budget_app delete --id TX-5 --yes         # delete 는 로그를 건드리지 않는다
+wc -l data/transactions.jsonl; wc -c data/transactions.idx     # 줄 수·idx 크기 모두 그대로 (슬롯만 0 으로 초기화)
+```
+
+> 카테고리/예산 파일이 "임시 파일 + `os.replace`" 로 안전하게 교체되는지(디스크 오류를 흉내 내 원본이 보존되는지)는
+> 손으로 재현하기 어려워 자동 테스트(`test_130_...`)로만 검증합니다.
+
+### 13) 보너스 — 백업 (14x)
+
+```bash
+python -m budget_app backup                         # [완료] 백업 생성: data/backup/20261005_175830 (날짜_시각) + 복사된 파일 목록
+ls data/backup/*              # 데이터 파일들이 그대로 복사되어 있다
+```
+
+### 14) 보너스 — 반복 내역 (15x)
+
+```bash
+python -m budget_app recurring add --day 31 --type income --category 월급 --amount 3000000 --memo "월급(반복)"   # id=RC-1
+python -m budget_app recurring list                          # 매월 31일 규칙 1개
+python -m budget_app recurring apply --month 2024-02         # 생성 1건 — 날짜가 2024-02-31 이 아니라 윤년 말일 2024-02-29 로 보정된다
+python -m budget_app recurring apply --month 2024-02         # 생성 0건, "이미 적용되어 건너뜀 1건" — 같은 달 중복 생성 방지
+python -m budget_app recurring remove --id RC-1              # 삭제
+python -m budget_app recurring list                          # "등록된 반복 규칙이 없습니다."
+```
+
+실습이 끝나면 `rm -rf ./data import.csv export_*.csv none.csv` 로 정리하세요(`./data` 에는 실습 데이터만 들어 있어야 합니다).
+
+---
+
 ## 4. 저장 파일 위치/형식
 
 기본 저장 폴더는 `./data` 이며 파일이 5개로 분리되어 있습니다(요구사항의 필수 3종 `transactions` / `categories` / `budgets` + 인덱스 `transactions.idx` + 보너스 `recurring.jsonl`).
