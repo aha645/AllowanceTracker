@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import datetime
+from typing import Callable
 
 from ..console import (
     maybe_hint_compact,
@@ -24,6 +25,7 @@ from ..models import (
 )
 from ..services import SearchCriteria
 from ..validators import (
+    format_tags,
     parse_tags,
     validate_amount,
     validate_date,
@@ -55,6 +57,19 @@ def build_criteria(ctx: AppContext, args: argparse.Namespace) -> SearchCriteria:
     )
 
 
+def _category_validator(ctx: AppContext) -> Callable[[str], str]:
+    """번호(1부터) 또는 이름으로 등록된 카테고리를 고르는 검증기."""
+    names = ctx.categories.names()
+
+    def validator(raw: str) -> str:
+        text = raw.strip()
+        if text.isdigit() and 1 <= int(text) <= len(names):
+            return names[int(text) - 1]
+        return ctx.transactions.validate_category(text)
+
+    return validator
+
+
 def _prompt_transaction(ctx: AppContext) -> Transaction:
     """대화형 입력으로 거래 1건을 구성한다(검증 실패 시 재입력)."""
     names = ctx.categories.names()
@@ -71,14 +86,7 @@ def _prompt_transaction(ctx: AppContext) -> Transaction:
         allow_blank=True,
     )
     print("등록된 카테고리: " + ", ".join(f"{i}) {n}" for i, n in enumerate(names, start=1)))
-
-    def category_validator(raw: str) -> str:
-        text = raw.strip()
-        if text.isdigit() and 1 <= int(text) <= len(names):
-            return names[int(text) - 1]
-        return ctx.transactions.validate_category(text)
-
-    category = prompt_until_valid("카테고리 (번호 또는 이름): ", category_validator)
+    category = prompt_until_valid("카테고리 (번호 또는 이름): ", _category_validator(ctx))
     amount = prompt_until_valid("금액 (양의 정수): ", validate_amount)
     memo = input("메모 (선택, 엔터=건너뛰기): ").strip()
     tags = parse_tags(input("태그 (선택, 쉼표 구분): "))
@@ -164,29 +172,82 @@ def cmd_search(ctx: AppContext, args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+CLEAR_TOKEN = "-"  # update 대화형에서 메모/태그를 비울 때 입력하는 값
+
+
+def _clearable(validator: Callable[[str], object]) -> Callable[[str], object]:
+    """`-` 입력은 "비우기"(빈 문자열)로 취급하는 검증기를 만든다."""
+
+    def wrapper(raw: str) -> object:
+        return "" if raw.strip() == CLEAR_TOKEN else validator(raw)
+
+    return wrapper
+
+
 @command
 def cmd_update(ctx: AppContext, args: argparse.Namespace) -> int:
-    """거래 수정(옵션 기반, 지정하지 않은 필드는 기존 값 유지)."""
+    """거래 수정(대화형). 현재 값을 보여주고 바꿀 항목만 입력받는다(엔터=유지, -=비우기)."""
     tx_id = parse_tx_id(args.id)
-    before, after = ctx.transactions.update(
-        tx_id,
-        date=args.date,
-        type_=args.type,
-        category=args.category,
-        amount=args.amount,
-        memo=args.memo,
-        tags=args.tags,
+    current = ctx.repo.get_transaction(tx_id)  # 없는 id 는 입력 전에 바로 오류 처리
+    print("[현재 값]")
+    render_transactions([current])
+    print(f"[안내] 바꿀 항목만 입력하세요. 엔터=기존 값 유지, 메모/태그는 '{CLEAR_TOKEN}' 입력 시 비움 (Ctrl+C 로 취소)")
+
+    date = prompt_until_valid(
+        f"날짜 [{current.date}]: ", validate_date, default=current.date, allow_blank=True
     )
+    type_ = prompt_until_valid(
+        f"타입 [{current.type}]: ", validate_type, default=current.type, allow_blank=True
+    )
+    category = prompt_until_valid(
+        f"카테고리 [{current.category}] (번호 또는 이름): ",
+        _category_validator(ctx),
+        default=current.category,
+        allow_blank=True,
+    )
+    amount = prompt_until_valid(
+        f"금액 [{current.amount}]: ", validate_amount, default=current.amount, allow_blank=True
+    )
+    memo = prompt_until_valid(
+        f"메모 [{current.memo}]: ", _clearable(lambda raw: raw.strip()),
+        default=current.memo, allow_blank=True,
+    )
+    tags = prompt_until_valid(
+        f"태그 [{format_tags(current.tags)}] (쉼표 구분): ",
+        _clearable(lambda raw: format_tags(parse_tags(raw))),
+        default=format_tags(current.tags),
+        allow_blank=True,
+    )
+
+    changes = {
+        "date": date,
+        "type_": type_,
+        "category": category,
+        "amount": amount,
+        "memo": memo,
+        "tags": tags,
+    }
+    current_values = {
+        "date": current.date,
+        "type_": current.type,
+        "category": current.category,
+        "amount": current.amount,
+        "memo": current.memo,
+        "tags": format_tags(current.tags),
+    }
+    changed = {k: v for k, v in changes.items() if v != current_values[k]}
+    if not changed:
+        print("[안내] 값이 기존과 동일하여 변경된 필드가 없습니다.")
+        return EXIT_OK
+
+    before, after = ctx.transactions.update(tx_id, **changed)
     print(f"[수정 완료] id={after.display_id}")
-    changes = [
+    rows = [
         [field, str(getattr(before, field)), str(getattr(after, field))]
         for field in ("date", "type", "category", "amount", "memo", "tags")
         if getattr(before, field) != getattr(after, field)
     ]
-    if changes:
-        print(format_table(["필드", "이전", "이후"], changes, ["left", "left", "left"]))
-    else:
-        print("[안내] 값이 기존과 동일하여 변경된 필드가 없습니다.")
+    print(format_table(["필드", "이전", "이후"], rows, ["left", "left", "left"]))
     maybe_hint_compact(ctx)
     return EXIT_OK
 

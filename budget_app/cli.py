@@ -51,9 +51,11 @@ def _add_filter_options(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_limit_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT,
-                        help=f"출력 건수 (기본값: {DEFAULT_LIST_LIMIT})")
-    parser.add_argument("--all", action="store_true", help="전체 출력(--limit 무시)")
+    """--limit 와 --all 은 서로 모순되므로 함께 쓸 수 없게 한다."""
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT,
+                       help=f"출력 건수 (기본값: {DEFAULT_LIST_LIMIT}, --all 과 함께 사용 불가)")
+    group.add_argument("--all", action="store_true", help="전체 출력(--limit 과 함께 사용 불가)")
 
 
 def _require_subcommand(name: str, choices: str) -> Callable[[AppContext, argparse.Namespace], int]:
@@ -88,14 +90,8 @@ def _add_transaction_parsers(sub: "argparse._SubParsersAction[argparse.ArgumentP
     _add_limit_options(p_search)
     p_search.set_defaults(func=cmd_search)
 
-    p_update = sub.add_parser("update", help="거래 수정(옵션 기반, 미지정 필드는 유지)")
+    p_update = sub.add_parser("update", help="거래 수정(대화형: 현재 값을 보며 바꿀 항목만 입력)")
     p_update.add_argument("--id", required=True, metavar="TX-N", help="수정할 거래 id")
-    p_update.add_argument("--date", metavar="YYYY-MM-DD", help="새 날짜")
-    p_update.add_argument("--type", choices=list(TRANSACTION_TYPES), help="새 타입")
-    p_update.add_argument("--category", help="새 카테고리")
-    p_update.add_argument("--amount", help="새 금액")
-    p_update.add_argument("--memo", help="새 메모")
-    p_update.add_argument("--tags", help="새 태그(쉼표 구분, 빈 문자열이면 전체 삭제)")
     p_update.set_defaults(func=cmd_update)
 
     p_delete = sub.add_parser("delete", help="거래 삭제")

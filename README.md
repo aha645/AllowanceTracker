@@ -26,38 +26,39 @@ python -m budget_app --verbose list      # 실행 로그/시간 측정 출력(�
 
 ### 테스트 실행
 
-외부 라이브러리 없이 표준 `unittest`로 작성되어 있고(총 142개), **두 계층**으로 나뉩니다.
+외부 라이브러리 없이 표준 `unittest`로 작성되어 있고, 테스트 파일은 **`tests/test_requirement_checklist.py` 하나**입니다(총 44개).
+`doc/request.md` 의 9개 기능(add → list → search → summary → budget → category → update → delete →
+import/export)을 요구사항 순서대로 **하나의 시나리오로 이어서** 필수 항목만 검증하고, 이어서 공통 관심사와
+보너스를 검증합니다.
 
-| 계층 | 파일 | 무엇을 검증하는가 | 호출 방식 |
-|---|---|---|---|
-| **기능(인수) 테스트** | `tests/test_requirement_checklist.py` | `doc/request.md` 1번 섹션의 **10대 기능 + 보너스 6종**이 요구사항 문서 순서 그대로, 항목별로 하나씩 실제 동작하는가 (`test_000_...` ~ `test_153_...`, 요구사항 번호 체계 그대로 매핑) | CLI를 블랙박스로 호출(`main(argv)`), 출력 문자열만으로 판단 |
-| **내부 단위테스트 / CLI 엣지케이스** | `tests/test_repository.py`<br>`tests/test_services.py`<br>`tests/test_formatter.py`<br>`tests/test_cli.py` | 그 기능을 구현하는 각 계층(저장 엔진 / 검증·서비스 로직 / 표 포맷터 / CLI 인자·오류 처리)이 내부적으로 올바른가, 그리고 기능 테스트에는 없는 배관 성격 엣지케이스(도움말, 잘못된 id 형식, 대화형 재입력 루프, compact 등) | 해당 계층의 파이썬 API를 직접 호출(단, `test_cli.py`는 CLI를 블랙박스로 호출) |
+| 번호 | 검증 대상 |
+|---|---|
+| 00x~09x | 사전 준비 + 9개 기능 (앞 단계에서 만든 거래 4건을 뒤 단계가 이어받아 사용) |
+| 10x | 데코레이터 (`--verbose` 로그/시간 측정, 함수 메타데이터 보존) |
+| 11x | 종료 코드 0 / 1(원인+힌트, 스택트레이스 없음) / 130(Ctrl+C) |
+| 12x | 표 포맷 (구분선, 부호, 천 단위 구분, 예산 막대) |
+| 13x | 저장 원자성 (임시파일 교체 실패 시 원본 보존, 거래 로그 append 전용 + 인덱스 제자리 갱신) |
+| 14x · 15x | 보너스: 백업, 반복 내역 |
 
-즉 "요구사항 하나하나가 검증되는가?"는 `test_requirement_checklist.py`의 메서드 이름을
-보면 바로 답이 나오고, "왜 되는가(내부 구현이 맞는가)?"는 나머지 4개 파일이 계층별로
-답합니다. `test_cli.py`의 `test_05_full_workflow`처럼 여러 기능을 하나로 엮은
-엔드투엔드 회귀 시나리오도 별도로 유지합니다. 기능 테스트와 항목이 겹치는 단순
-검증은 `test_cli.py`에서 제거했습니다(예: 카테고리 미등록 add 차단, 없는 id delete
-등은 `test_requirement_checklist.py`에만 있습니다).
+CLI를 블랙박스로 호출(`main(argv)`)하고 출력 문자열과 저장 파일만으로 판단합니다. 모든 테스트가
+`tests/data` 폴더 하나를 공유하며 번호 순서대로 데이터를 이어받습니다. 데이터는 **`test_000_reset_data`
+에서만 지웁니다**(수동 초기화).
 
-기능 테스트는 `tests/data` 폴더 하나를 공유하며 **실행을 시작할 때 이 폴더를 비우고** 번호 순서대로
-데이터를 쌓습니다(끝난 뒤에는 수동 확인용으로 남겨 두므로 몇 번 다시 실행해도 같은 결과입니다).
+- **파일 전체 실행**: 000 이 먼저 초기화하므로 몇 번을 다시 실행해도 같은 결과입니다. 끝난 뒤 `tests/data`에 시나리오 결과가 남습니다.
+- **개별 테스트 실행**: 직전 실행이 남긴 데이터 위에서 동작합니다. 처음부터 다시 하려면 `test_000_reset_data` →
+  `test_002_prepare_default_categories`(기본 카테고리 사전 등록) → `test_010`, `test_011`, `test_013`(거래 등록) 순서로
+  실행해 데이터를 준비한 뒤 원하는 테스트를 실행하세요. 전체 실행이 끝난 직후의 데이터는 시나리오 마지막 상태
+  (수정/삭제가 반영된 상태)라서 중간 단계 테스트(list, search, summary 등)는 실패할 수 있습니다.
 
 ```bash
-# 전체 테스트 자동 탐색 실행 (가장 흔히 쓰는 방법)
+# 전체 테스트 실행
 python -m unittest discover -s tests -v
 
-# 요구사항 10대 기능 + 보너스만 콕 집어서 실행
+# 같은 의미 (파일 하나만 지정)
 python -m unittest tests.test_requirement_checklist -v
 
-# 파일 하나만 지정해서 실행 (import 경로: tests/test_repository.py → tests.test_repository)
-python -m unittest tests.test_repository -v
-
-# 특정 클래스/메서드 하나만 실행
-python -m unittest tests.test_requirement_checklist.RequirementChecklistTestCase.test_066_budget_usage_overrun_warning -v
-
 # 파일을 직접 실행 (테스트 파일 상단의 sys.path 보정 코드 덕분에 이 방식도 동작함)
-python tests/test_repository.py -v
+python tests/test_requirement_checklist.py -v
 ```
 
 ### VSCode 테스트 탭(비커 아이콘) 활성화하기
@@ -139,7 +140,7 @@ VSCode가 열리면 아래 순서로 테스트 탭을 활성화합니다.
    하지 않는 이유는, 그 경로가 사람·컴퓨터마다 다르기 때문입니다 — 대신 매번 이 선택
    UI로 지정합니다.
 
-3. **좌측 액티비티바의 테스트(비커) 아이콘 클릭** → `tests/` 아래 5개 파일이 트리로
+3. **좌측 액티비티바의 테스트(비커) 아이콘 클릭** → `tests/` 아래 `test_requirement_checklist.py` 가 트리로
    나타나면 성공. 각 테스트 옆 ▶(실행) 또는 🐛(디버그) 버튼으로 개별 실행/디버깅이
    가능합니다.
 
@@ -189,12 +190,13 @@ python -m budget_app summary --month 2024-01 --top 3
 | `add` | 거래 추가 (옵션 없이 실행하면 대화형) | `python -m budget_app add` |
 | `add` (옵션) | 자동화용 비대화형 추가 | `python -m budget_app add --date 2024-01-05 --type expense --category "식비" --amount 12000 --memo "점심" --tags "외식,점심"` |
 | `list` | 거래 목록(최신순) | `python -m budget_app list --limit 20` |
+| `list --all` | 전체 출력 (`--limit` 과 함께 쓸 수 없음) | `python -m budget_app list --all` |
 | `search` | 조건 검색(AND 결합) | `python -m budget_app search --from 2024-01-01 --to 2024-01-31 --category "식비" --type expense --q "점심" --tag "외식"` |
 | `summary` | 월별 요약 + 예산 사용률 | `python -m budget_app summary --month 2024-01 --top 3` |
 | `budget set` | 월 예산 설정(같은 달은 덮어쓰기) | `python -m budget_app budget set --month 2024-01 --amount 500000` |
 | `budget show/list/remove` | 예산 조회/전체 목록/삭제 | `python -m budget_app budget show --month 2024-01` |
 | `category add/list/remove` | 카테고리 관리 | `python -m budget_app category add --name "식비"` |
-| `update` | 거래 수정(옵션 기반) | `python -m budget_app update --id TX-3 --amount 15000 --memo "저녁"` |
+| `update` | 거래 수정(**대화형**: 현재 값을 보여주고 바꿀 항목만 입력, 엔터=유지, `-`=메모/태그 비우기) | `python -m budget_app update --id TX-3` |
 | `delete` | 거래 삭제 | `python -m budget_app delete --id TX-3 --yes` |
 | `import` | CSV 일괄 등록 | `python -m budget_app import --from sample.csv` |
 | `export` | CSV 내보내기 | `python -m budget_app export --out export.csv --month 2024-01` |
@@ -205,6 +207,24 @@ python -m budget_app summary --month 2024-01 --top 3
 
 공통 옵션: `--data-dir PATH`, `--verbose`, `--version`, 모든 커맨드의 `--help`.
 모든 옵션은 `--` 표기로 통일되어 있습니다.
+
+### update(대화형) 예시
+
+```
+$ python -m budget_app update --id TX-3
+[현재 값]
+#  id    날짜        타입     카테고리     금액  메모  태그
+-  ----  ----------  -------  --------  -------  ----  ----
+1  TX-3  2024-01-05  expense  식비      -12,000  점심  외식
+[안내] 바꿀 항목만 입력하세요. 엔터=기존 값 유지, 메모/태그는 '-' 입력 시 비움 (Ctrl+C 로 취소)
+날짜 [2024-01-05]:
+타입 [expense]:
+카테고리 [식비] (번호 또는 이름): 교통
+금액 [12000]: 15000
+메모 [점심]: -
+태그 [외식] (쉼표 구분):
+[수정 완료] id=TX-3
+```
 
 ### 출력 예시
 
@@ -346,7 +366,7 @@ date,type,category,amount,memo,tags
 | 항목 | 결정 | 이유 |
 |---|---|---|
 | 저장 포맷 | **JSONL** | 특수문자·쉼표를 포함한 메모/태그 처리에 유리 |
-| `update` 방식 | **옵션 기반** (`update --id TX-3 --amount 15000`) | `search`/`delete` 와 CLI 패턴이 일관되고 자동화 가능. 지정하지 않은 필드는 기존 값 유지 |
+| `update` 방식 | **대화형 기반(안 B)** 으로 고정 — `update --id TX-3` 후 항목별 입력 (필드 옵션 없음) | 현재 값을 보면서 고칠 수 있어 수정이 수월함. 엔터=기존 값 유지, 메모/태그는 `-` 입력 시 비움, 검증 실패 시 재입력 |
 | 카테고리 초기화 | **안 B** — 카테고리가 비어 있으면 `add` 를 차단하고 `category add` 를 안내 | 기본 카테고리를 임의로 만들어 주지 않음 |
 | 거래 id 표시 | `TX-1`, `TX-2` … (**zero-padding 없음**) | 자릿수를 고정하면 대용량에서 자릿수 초과 문제가 생김 |
 | id 재번호 | **하지 않음** — 삭제 후 빈 번호(gap)는 정상 | ① 레코드 본문에 id 가 있어 재번호하려면 다시 써야 하고 append-only 전제가 깨짐 ② "위치=id" 인덱스에서 재번호는 뒤 슬롯을 전부 밀어야 해서 O(1) 삭제가 O(n)이 됨 ③ 실제 회계 시스템도 취소된 번호를 재사용하지 않음(감사 관점) |
@@ -396,12 +416,7 @@ budget_app/
 ├── formatter.py    외부 라이브러리 없는 표 정렬(전각 문자 폭 계산), 금액/막대 포맷
 └── decorators.py   handle_errors / log_call / timeit (functools.wraps 로 메타데이터 보존)
 tests/
-├── test_requirement_checklist.py  기능(인수) 테스트 — 10대 기능 + 보너스 6종, 요구사항 번호 체계 1:1 매핑
-├── test_repository.py             단위테스트 — 저장 엔진(로그 + 이진 인덱스)
-├── test_services.py               단위테스트 — 검증 함수 + 서비스(검색/요약/예산/CSV/반복규칙)
-├── test_formatter.py              단위테스트 — 표 정렬 포맷터
-└── test_cli.py                    단위테스트 — CLI 인자 파싱/오류 처리/대화형 입력 + 회귀 시나리오(기능 테스트와 겹치지 않는 엣지케이스만)
-                         (unittest 기반, 총 142개)
+└── test_requirement_checklist.py  인수 테스트 — 9개 기능 시나리오 + 데코레이터/종료코드/포맷/원자성/보너스 (unittest 기반, 총 44개)
 ```
 
 계층 책임은 **모델 → 저장소 → 서비스 → 커맨드 핸들러/CLI** 로 분리되어 있습니다.
