@@ -16,7 +16,7 @@ python -m budget_app --help              # 전체 도움말
 python -m budget_app <command> --help    # 서브커맨드별 도움말
 ```
 
-첫 실행 시 저장 폴더(`./data`)와 데이터 파일 4종이 자동 생성됩니다.
+첫 실행 시 저장 폴더(`./data`)와 데이터 파일 5종(필수 3종 transactions/categories/budgets + 보조 2종)이 자동 생성됩니다.
 저장 위치는 `--data-dir` 로 바꿀 수 있습니다.
 
 ```bash
@@ -26,14 +26,14 @@ python -m budget_app --verbose list      # 실행 로그/시간 측정 출력(�
 
 ### 테스트 실행
 
-외부 라이브러리 없이 표준 `unittest`로 작성되어 있고, 테스트 파일은 **`tests/test_requirement_checklist.py` 하나**입니다(총 44개).
+외부 라이브러리 없이 표준 `unittest`로 작성되어 있고, 테스트 파일은 **`tests/test_requirement_checklist.py` 하나**입니다(총 45개).
 `doc/request.md` 의 9개 기능(add → list → search → summary → budget → category → update → delete →
 import/export)을 요구사항 순서대로 **하나의 시나리오로 이어서** 필수 항목만 검증하고, 이어서 공통 관심사와
 보너스를 검증합니다.
 
 | 번호 | 검증 대상 |
 |---|---|
-| 00x~09x | 사전 준비 + 9개 기능 (앞 단계에서 만든 거래 4건을 뒤 단계가 이어받아 사용) |
+| 00x~09x | 사전 준비 + 9개 기능 (앞 단계에서 만든 거래 5건을 뒤 단계가 이어받아 사용) |
 | 10x | 데코레이터 (`--verbose` 로그/시간 측정, 함수 메타데이터 보존) |
 | 11x | 종료 코드 0 / 1(원인+힌트, 스택트레이스 없음) / 130(Ctrl+C) |
 | 12x | 표 포맷 (구분선, 부호, 천 단위 구분, 예산 막대) |
@@ -239,7 +239,7 @@ $ python -m budget_app list --limit 3
 [완료] 3건 출력 / 전체 5건
 ```
 
-왼쪽 `#` 은 화면용 순번이고, `TX-N` 이 내부 불변 id 입니다. 수정/삭제/검색에는 항상 `TX-N` 을 씁니다
+왼쪽 `#` 은 화면용 순번이고, `TX-N` 이 내부 불변 id 입니다. 수정/삭제에는 항상 `TX-N` 을 씁니다
 (`--id 3` 처럼 숫자만 써도 됩니다).
 
 ```
@@ -264,7 +264,7 @@ $ python -m budget_app summary --month 2024-02
 
 ## 4. 저장 파일 위치/형식
 
-기본 저장 폴더는 `./data` 이며 파일 4개로 분리되어 있습니다.
+기본 저장 폴더는 `./data` 이며 파일이 5개로 분리되어 있습니다(요구사항의 필수 3종 `transactions` / `categories` / `budgets` + 인덱스 `transactions.idx` + 보너스 `recurring.jsonl`).
 
 | 파일 | 역할 | 포맷 | 쓰기 방식 |
 |---|---|---|---|
@@ -320,7 +320,7 @@ python -m budget_app compact
 ```
 
 CLI는 `update`·`delete` 실행 직후 고아 데이터 비율을 확인해서, 50%를 넘으면 `compact`를
-안내합니다(`cli.py`의 `maybe_hint_compact()`). 자동으로 `compact`를 실행하지는 않습니다 —
+안내합니다(`console.py`의 `maybe_hint_compact()`). 자동으로 `compact`를 실행하지는 않습니다 —
 명령마다 새로 뜨는 1회성 CLI라 "유휴 시간 자동 정리"가 성립하지 않기도 하고, 사용자
 모르게 로그 파일 전체를 재작성하는 것보다 시점을 사용자가 직접 고르게 하는 편이
 안전하다고 판단했기 때문입니다.
@@ -416,12 +416,12 @@ budget_app/
 ├── formatter.py    외부 라이브러리 없는 표 정렬(전각 문자 폭 계산), 금액/막대 포맷
 └── decorators.py   handle_errors / log_call / timeit (functools.wraps 로 메타데이터 보존)
 tests/
-└── test_requirement_checklist.py  인수 테스트 — 9개 기능 시나리오 + 데코레이터/종료코드/포맷/원자성/보너스 (unittest 기반, 총 44개)
+└── test_requirement_checklist.py  인수 테스트 — 9개 기능 시나리오 + 데코레이터/종료코드/포맷/원자성/보너스 (unittest 기반, 총 45개)
 ```
 
 계층 책임은 **모델 → 저장소 → 서비스 → 커맨드 핸들러/CLI** 로 분리되어 있습니다.
 저장 방식(파일 포맷)은 `repository`/`stores` 만 알고, 규칙은 `services` 가, 사람과의 입출력은
-`cli` 가 담당합니다. 모든 공개 함수/메서드에 타입 힌트가 붙어 있습니다.
+`commands/`(핸들러)·`console.py`(공용 입출력)가, 커맨드 연결은 `cli` 가 담당합니다. 모든 공개 함수/메서드에 타입 힌트가 붙어 있습니다.
 
 주요 클래스: `Transaction`, `TransactionIndex`, `TransactionRepository`, `JsonlStore`,
 `CategoryStore`, `BudgetStore`, `RecurringStore`, `TransactionService`, `BudgetService`,
