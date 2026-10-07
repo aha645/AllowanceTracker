@@ -556,7 +556,7 @@ $ python -m budget_app --verbose list --limit 1
 1  TX-5  2024-03-01  expense  교통      -1,500
 
 [완료] 1건 출력 / 전체 6건
-[log] cmd_list 실행 시간 0.32ms
+[log] cmd_list 실행 시간 0.28ms
 [log] <- cmd_list 종료
 ```
 
@@ -637,7 +637,7 @@ $ python -m budget_app recurring remove --id RC-1
 <details>
 <summary><b>보너스 — 테이블 정렬</b></summary>
 
-외부 라이브러리 없이 한글 폭까지 계산해 열을 맞추고, 수입 `+` / 지출 `-` 부호와 천 단위 구분, 예산 막대를 출력
+외부 라이브러리 없이 한글 폭까지 계산해 열을 맞추고, 수입 `+` / 지출 `-` 부호와 천 단위 구분을 출력(예산 막대는 5번 budget 의 summary 참고)
 
 ```text
 $ python -m budget_app list --limit 3
@@ -800,6 +800,24 @@ transactions.jsonl
 | `categories.jsonl` · `budgets.jsonl` | 카테고리 / 월별 예산 | 전체 재작성 (임시파일 + `os.replace`) |
 | `recurring.jsonl` | 반복 거래 규칙 (보너스) | 전체 재작성 (임시파일 + `os.replace`) |
 | `backup/` | `backup` 명령이 만드는 백업 | 타임스탬프 폴더 |
+
+### 파일 형식 (실제 내용)
+
+`.jsonl` 은 한 줄이 JSON 하나인 텍스트 파일입니다. 아래는 위 실행을 마친 뒤의 실제 내용입니다(`compact` 로 옛 줄이 정리된 상태라 `transactions.jsonl` 에는 살아있는 최신 내용만 있습니다).
+
+```text
+$ head -n 2 data/transactions.jsonl data/categories.jsonl data/budgets.jsonl
+==> data/transactions.jsonl <==
+{"id": 1, "date": "2024-01-05", "type": "expense", "category": "식비", "amount": 16000, "memo": "", "tags": ["외식"]}
+{"id": 3, "date": "2024-01-25", "type": "income", "category": "월급", "amount": 3000000, "memo": "1월 급여", "tags": []}
+
+==> data/categories.jsonl <==
+{"created_at": "2024-02-01T09:00:00", "name": "식비"}
+{"created_at": "2024-02-01T09:00:00", "name": "교통"}
+
+==> data/budgets.jsonl <==
+{"amount": 500000, "month": "2024-01", "updated_at": "2024-02-01T09:00:00"}
+```
 
 ### 최신 거래의 기준
 
