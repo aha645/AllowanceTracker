@@ -182,9 +182,20 @@ def _add_recurring_parsers(sub: "argparse._SubParsersAction[argparse.ArgumentPar
     r_apply.set_defaults(func=cmd_recurring_apply)
 
 
+class FriendlyParser(argparse.ArgumentParser):
+    """argparse 의 사용법 오류도 `[오류]`/`[힌트]` 형식으로 출력한다(종료 코드 2 유지).
+
+    서브커맨드 파서도 부모와 같은 클래스로 만들어지므로 모든 커맨드에 적용된다.
+    """
+
+    def error(self, message: str):  # type: ignore[override]
+        print_error(message, f"`{self.prog} --help` 로 사용법과 허용 값을 확인하세요.")
+        self.exit(2)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """서브커맨드 전체를 정의한 argparse 파서를 만든다."""
-    parser = argparse.ArgumentParser(
+    parser = FriendlyParser(
         prog="python -m budget_app",
         description="콘솔 가계부 — 거래 기록/검색/월별 요약/예산 관리",
         formatter_class=argparse.RawDescriptionHelpFormatter,
