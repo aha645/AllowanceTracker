@@ -45,7 +45,7 @@ def _add_filter_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--to", dest="date_to", metavar="YYYY-MM-DD", help="종료일(포함)")
     parser.add_argument("--month", metavar="YYYY-MM", help="해당 월만 조회")
     parser.add_argument("--category", help="카테고리 필터(등록된 카테고리만)")
-    parser.add_argument("--type", choices=list(TRANSACTION_TYPES), help="income/expense 필터")
+    parser.add_argument("--type", choices=TRANSACTION_TYPES, help="income/expense 필터")
     parser.add_argument("--q", dest="query", metavar="KEYWORD", help="메모 키워드 검색")
     parser.add_argument("--tag", help="태그 필터(정확히 일치)")
 
@@ -74,7 +74,7 @@ def _require_subcommand(name: str, choices: str) -> Callable[[AppContext, argpar
 def _add_transaction_parsers(sub: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
     p_add = sub.add_parser("add", help="거래 추가 (옵션 없이 실행하면 대화형)")
     p_add.add_argument("--date", metavar="YYYY-MM-DD", help="거래 날짜")
-    p_add.add_argument("--type", choices=list(TRANSACTION_TYPES), help="거래 타입")
+    p_add.add_argument("--type", choices=TRANSACTION_TYPES, help="거래 타입")
     p_add.add_argument("--category", help="카테고리(등록된 것만)")
     p_add.add_argument("--amount", help="금액(0보다 큰 정수)")
     p_add.add_argument("--memo", help="메모(선택)")
@@ -164,7 +164,7 @@ def _add_recurring_parsers(sub: "argparse._SubParsersAction[argparse.ArgumentPar
 
     r_add = rec_sub.add_parser("add", help="반복 규칙 등록")
     r_add.add_argument("--day", required=True, help="매월 반복할 일자(1~31)")
-    r_add.add_argument("--type", required=True, choices=list(TRANSACTION_TYPES))
+    r_add.add_argument("--type", required=True, choices=TRANSACTION_TYPES)
     r_add.add_argument("--category", required=True)
     r_add.add_argument("--amount", required=True)
     r_add.add_argument("--memo")
