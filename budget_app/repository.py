@@ -16,6 +16,12 @@
     항목은 `struct.pack("<IQ", date.toordinal(), id)` 이며 (날짜, id) 오름차순으로 정렬돼 있다.
     update 로 날짜가 바뀌면 새 항목을 끼워 넣고 옛 항목은 지우지 않는다(읽을 때 건너뜀).
     삭제된 거래의 항목도 마찬가지다. 이 파일은 transactions.jsonl/idx 에서 언제든 다시 만들 수 있다.
+
+쓰기 순서
+    jsonl(내용) → date.idx(날짜 항목) → idx(위치 슬롯). idx 슬롯을 쓰는 순간이 "저장 완료"다.
+    중간에 꺼지면 date.idx 에 아직 idx 에 없는 id 의 항목이 남을 수 있는데, 읽을 때 슬롯 범위 밖이라
+    건너뛰고, 그 id 는 다음 저장 때 다시 발급된다. 반대 순서였다면 저장된 거래가 날짜 색인에만 빠져
+    list/summary 에서 조용히 사라졌다.
 """
 
 from __future__ import annotations
@@ -373,13 +379,16 @@ class TransactionRepository:
         new_id = self.index.next_id()
         stored = tx.replace_fields(id=new_id)
         start, end = self._append_record(stored)
+        # 날짜 항목을 슬롯보다 먼저 쓴다. 슬롯을 먼저 쓰고 그 사이에 꺼지면 id 로는 찾히는 거래가
+        # 날짜 색인에만 빠져 list/summary 에서 조용히 사라진다. 이 순서면 꺼져도 남는 건 슬롯 범위 밖
+        # id 의 날짜 항목뿐이라 읽을 때 건너뛰고, 그 id 는 다음 add 때 다시 발급된다.
+        self.date_index.merge([(date_ordinal(stored.date), stored.id)])
         assigned = self.index.append_slot(start, end)
         if assigned != new_id:  # pragma: no cover - 동시 실행 방어
             raise StorageError(
                 f"id 발급이 어긋났습니다(expected={new_id}, actual={assigned}).",
                 "같은 data-dir 에 대해 여러 프로세스를 동시에 실행하지 마세요.",
             )
-        self.date_index.merge([(date_ordinal(stored.date), stored.id)])
         return stored
 
     def append_transactions(self, transactions: Iterable[Transaction]) -> int:
@@ -410,11 +419,13 @@ class TransactionRepository:
             os.fsync(log.fileno())
         if not count:
             return 0
+        # append_transaction() 과 같은 이유로 날짜 항목을 슬롯보다 먼저 쓴다. 슬롯 묶음을 쓰기 전에
+        # 꺼지면 import 한 거래 전체가 슬롯 범위 밖이 되어, 반쯤 보이는 상태 없이 통째로 없던 일이 된다.
+        self.date_index.merge_keys(keys)
         with self.idx_path.open("ab") as idx:
             idx.write(slots)
             idx.flush()
             os.fsync(idx.fileno())
-        self.date_index.merge_keys(keys)
         return count
 
     def update_transaction(self, tx: Transaction) -> Transaction:
@@ -427,9 +438,13 @@ class TransactionRepository:
                 "list 명령으로 존재하는 id 를 확인하세요.",
             )
         start, end = self._append_record(tx)
-        self.index.write_slot(tx.id, start, end)
-        if old.date != tx.date:  # 날짜가 바뀌면 새 위치에 항목을 끼워 넣는다(옛 항목은 읽을 때 건너뜀)
+        # 날짜가 바뀌면 새 위치에 항목을 끼워 넣는다(옛 항목은 읽을 때 건너뜀). 슬롯보다 먼저 쓰는
+        # 이유: 그 사이에 꺼져도 슬롯은 아직 수정 전 레코드를 가리키므로, 새 항목은 날짜 불일치로
+        # 건너뛰고 거래는 수정 전 날짜에 한 번만 나온다. 반대 순서면 슬롯은 새 날짜인데 새 날짜 항목이
+        # 없어, 수정한 거래가 목록에서 사라진다.
+        if old.date != tx.date:
             self.date_index.merge([(date_ordinal(tx.date), tx.id)])
+        self.index.write_slot(tx.id, start, end)
         return tx
 
     def delete_transaction(self, tx_id: int) -> Transaction:
@@ -494,8 +509,19 @@ class TransactionRepository:
             if date_to
             else self.date_index.count()
         )
+        # 날짜 항목의 id 를 슬롯 수와 비교해, 중단된 저장의 흔적(건너뜀)과 손상(오류)을 구분한다.
+        # 예전에는 둘 다 슬롯을 읽다 실패하면 조용히 건너뛰어서, 손상돼도 거래가 빠진 결과가
+        # 종료 코드 0 으로 나왔고 id 0 은 음수 seek 로 엉뚱한 입출력 오류가 났다.
+        slot_count = self.index.slot_count()
         with self.idx_path.open("rb") as idx, self.log_path.open("rb") as log:
             for ordinal, tx_id in self.date_index.iter_desc(lo, hi):
+                if tx_id == 0:  # id 는 1부터라 정상적으로는 생길 수 없다
+                    raise StorageError(
+                        "날짜 인덱스(transactions.date.idx)가 손상되었습니다: id 0 항목이 있습니다.",
+                        "compact 를 실행하면 원본에서 날짜 인덱스를 다시 만듭니다.",
+                    )
+                if tx_id > slot_count:  # 슬롯을 쓰기 전에 중단된 저장의 흔적(append_transaction 참고)
+                    continue
                 idx.seek((tx_id - 1) * SLOT_SIZE)
                 raw = idx.read(SLOT_SIZE)
                 if len(raw) != SLOT_SIZE:

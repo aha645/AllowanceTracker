@@ -61,7 +61,7 @@ if _PROJECT_ROOT not in sys.path:
 
 from budget_app.cli import main
 from budget_app.commands.transaction import cmd_add
-from budget_app.repository import TransactionRepository
+from budget_app.repository import DATE_ENTRY_STRUCT, DateIndex, TransactionRepository
 from budget_app.stores import RecurringStore
 
 
@@ -617,6 +617,43 @@ class RequirementChecklistTestCase(unittest.TestCase):
         date_idx.unlink()
         self.assertEqual(self._listed_ids(), before)
         self.assertEqual(date_idx.stat().st_size, len(before) * 12)
+
+        # 날짜 항목을 쓴 직후(슬롯을 쓰기 전) 중단돼도 목록과 id 조회가 서로 맞는다
+        def stop_after(original):  # type: ignore[no-untyped-def]
+            def wrapper(index, entries):  # type: ignore[no-untyped-def]
+                original(index, entries)
+                raise KeyboardInterrupt  # 강제 종료 흉내
+            return wrapper
+
+        with mock.patch.object(DateIndex, "merge", stop_after(DateIndex.merge)):
+            code, _, _ = self.run_cli("add", "--date", "2024-01-15", "--type", "expense",
+                                      "--category", "식비", "--amount", "1000", "--memo", "중단된_추가")
+        self.assertEqual(code, 130)
+        self.assertEqual(self._listed_ids(), before)  # 반쯤 저장된 거래는 어디에도 보이지 않는다
+        self._add("after_stop", "2024-01-16", "expense", "식비", "1000", "중단_뒤_추가")
+        order = self._listed_ids()
+        self.assertEqual(order.count(self.ids["after_stop"]), 1)  # 같은 id 를 다시 받아도 한 번만 나온다
+        self.assertEqual(len(order), len(before) + 1)
+
+        with mock.patch.object(DateIndex, "merge_keys", stop_after(DateIndex.merge_keys)):
+            self.assertEqual(self.run_cli("import", "--from", str(source))[0], 130)
+        self.assertEqual(self._listed_ids(), order)
+
+        with mock.patch.object(DateIndex, "merge", stop_after(DateIndex.merge)), \
+                self.fake_input(["2023-01-01", "", "", "", "", ""]):
+            self.assertEqual(self.run_cli("update", "--id", self.ids["after_stop"])[0], 130)
+        self.assertEqual(self._listed_ids(), order)  # 수정 전 날짜 위치에 그대로 한 번
+
+        # id 0 항목처럼 생길 수 없는 손상은 조용히 건너뛰지 않고 compact 를 안내한다
+        good = date_idx.read_bytes()
+        ordinal, _ = DATE_ENTRY_STRUCT.unpack(good[-12:])
+        date_idx.write_bytes(good[:-12] + DATE_ENTRY_STRUCT.pack(ordinal, 0))
+        code, _, err = self.run_cli("list", "--all")
+        self.assertEqual(code, 1)
+        self.assertIn("[오류] 날짜 인덱스", err)
+        self.assertIn("compact", err)
+        self.assertEqual(self.run_cli("compact")[0], 0)
+        self.assertEqual(self._listed_ids(), order)
 
 
 if __name__ == "__main__":

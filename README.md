@@ -860,7 +860,9 @@ $ head -n 2 data/transactions.jsonl data/categories.jsonl data/budgets.jsonl
 
 - update·delete 로 남은 옛 줄과 옛 항목은 읽을 때 건너뛰고, `python -m budget_app compact` 가 정리합니다. **id 는 바뀌지 않고** 삭제된 번호는 재사용되지 않습니다.
 - `transactions.date.idx` 는 `jsonl`/`idx` 에서 언제든 다시 만들 수 있어서, 없거나 손상되면 다음 실행 때 자동으로 재생성됩니다.
-- 한계: 파일을 쓰는 도중 강제 종료되면 인덱스가 어긋날 수 있고(`compact` 로 복구), `transactions.idx` 는 삭제해도 줄지 않으며, 같은 `--data-dir` 의 동시 실행은 고려하지 않았습니다(1인 사용 전제).
+- 쓰는 순서는 `jsonl`(내용) → `transactions.date.idx`(날짜 항목) → `transactions.idx`(위치) 이고, **위치를 쓰는 순간이 저장 완료**입니다. 그 전에 꺼지면 날짜 항목만 남는데, 아직 위치가 없는 id 라서 읽을 때 건너뛰고 그 id 는 다음 저장 때 다시 쓰입니다. 그래서 저장된 거래가 목록·요약에서만 빠지는 일이 없습니다.
+- id 0 처럼 정상적으로 생길 수 없는 날짜 항목을 만나면 건너뛰지 않고 `[오류]` 와 함께 `compact`(날짜 인덱스 재생성)를 안내합니다.
+- 한계: 디스크 오류나 직접 편집으로 날짜 항목이 **다른 거래를 가리키게** 손상되면, 수정 전 옛 항목과 구분할 수 없어 그 거래가 목록에서 빠질 수 있습니다(`compact` 로 복구). `compact` 자체가 도중에 꺼지면 `transactions.idx` 가 어긋날 수 있고, `transactions.idx` 는 삭제해도 줄지 않으며, 같은 `--data-dir` 의 동시 실행은 고려하지 않았습니다(1인 사용 전제).
 
 ## 5. 대용량(10만 건 이상) 성능 분석
 
