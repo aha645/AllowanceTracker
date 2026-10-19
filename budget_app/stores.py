@@ -10,7 +10,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 from .models import (
     Budget,
@@ -101,6 +101,39 @@ class CategoryStore(JsonlStore):
         categories.append(category)
         self._rewrite([c.to_dict() for c in categories])
         return category
+
+    def count_of(self, name: str) -> int:
+        """기록된 사용 건수(없는 카테고리는 0)."""
+        return next((c.count for c in self.list_all() if c.name == name), 0)
+
+    def has_counts(self) -> bool:
+        """모든 줄에 사용 건수가 기록돼 있는지. 건수 기록 이전에 만든 파일이면 False."""
+        return all("count" in row for row in self._iter_raw())
+
+    def adjust_counts(self, deltas: Mapping[str, int]) -> bool:
+        """카테고리별 사용 건수를 한꺼번에 더하고 빼서 파일을 한 번만 다시 쓴다.
+
+        0 아래로 내려가는 카테고리가 있으면 False 를 돌려준다. 기록이 실제보다 적었다는 뜻이라
+        (그대로 두면 사용 중인 카테고리를 지울 수 있음) 호출자가 거래를 다시 세어야 한다.
+        """
+        if not any(deltas.values()):
+            return True
+        categories = self.list_all()
+        consistent = True
+        for category in categories:
+            category.count += deltas.get(category.name, 0)
+            if category.count < 0:
+                consistent = False
+                category.count = 0
+        self._rewrite([c.to_dict() for c in categories])
+        return consistent
+
+    def set_counts(self, counts: Mapping[str, int]) -> None:
+        """사용 건수를 통째로 바꾼다(다시 센 결과 반영용). counts 에 없는 카테고리는 0."""
+        categories = self.list_all()
+        for category in categories:
+            category.count = counts.get(category.name, 0)
+        self._rewrite([c.to_dict() for c in categories])
 
     def remove(self, name: str) -> Category:
         clean = name.strip()

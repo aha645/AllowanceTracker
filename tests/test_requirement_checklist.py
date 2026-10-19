@@ -62,7 +62,7 @@ if _PROJECT_ROOT not in sys.path:
 from budget_app.cli import main
 from budget_app.commands.transaction import cmd_add
 from budget_app.repository import DATE_ENTRY_STRUCT, DateIndex, TransactionRepository
-from budget_app.stores import RecurringStore
+from budget_app.stores import CategoryStore, RecurringStore
 
 
 class _TeeIO(io.StringIO):
@@ -117,6 +117,12 @@ class RequirementChecklistTestCase(unittest.TestCase):
         if found is None:
             self.fail(f"출력에서 {pattern!r} 를 찾지 못했습니다:\n{text}")
         return found.group(1)
+
+    def _category_counts(self) -> tuple[dict[str, int], dict[str, int]]:
+        """(categories.jsonl 에 기록된 사용 건수, 거래를 실제로 센 건수)."""
+        saved = {c.name: c.count for c in CategoryStore(self.data_dir).list_all()}
+        actual = TransactionRepository(self.data_dir).category_counts()
+        return saved, {name: actual.get(name, 0) for name in saved}
 
     def run_cli(self, *argv: str) -> tuple[int, str, str]:
         """CLI 를 실행하고 (종료 코드, stdout, stderr) 를 돌려준다(콘솔에도 그대로 보여준다)."""
@@ -340,6 +346,17 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("찾을 수 없습니다", err)
 
+        # 카테고리마다 사용 건수가 기록되고, 실제 거래 수와 같다
+        saved, actual = self._category_counts()
+        self.assertEqual(saved, actual)
+        self.assertGreater(saved["식비"], 0)
+
+        # 건수가 0 이면 거래를 훑지 않고 바로 삭제한다(10만 건이어도 즉시)
+        self.assertEqual(self.run_cli("category", "add", "--name", "미사용")[0], 0)
+        with mock.patch.object(TransactionRepository, "iter_latest_transactions",
+                               side_effect=AssertionError("훑으면 안 됨")):
+            self.assertEqual(self.run_cli("category", "remove", "--name", "미사용")[0], 0)
+
     def test_070_update(self) -> None:
         # 날짜/타입/카테고리는 엔터(유지), 금액 12,000 → 15,000, 메모는 '-'(비움), 태그는 엔터(유지)
         with self.fake_input(["", "", "", "15000", "-", ""]):
@@ -530,6 +547,48 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(self.run_cli("delete", "--id", self.ids["tmp"], "--yes")[0], 0)
         self.assertEqual(log.stat().st_size, log_size)
         self.assertEqual(idx.stat().st_size, idx_size)
+
+        # 카테고리 사용 건수는 실제보다 적은 적이 없다. 090 의 "메모리 부족" import 가 건수를 저장한 뒤
+        # 거래 저장 전에 멈췄으므로 그만큼은 많다(안전한 쪽으로 틀림)
+        saved, actual = self._category_counts()
+        self.assertTrue(all(saved[name] >= actual[name] for name in saved), (saved, actual))
+        self.assertNotEqual(saved, actual)
+
+        # 건수를 저장한 뒤 거래를 쓰기 전에 꺼지면 건수만 많아진다 → 삭제 때 확인해 보고 허용
+        self.assertEqual(self.run_cli("category", "add", "--name", "중단_카테고리")[0], 0)
+        with mock.patch.object(TransactionRepository, "append_transaction", side_effect=KeyboardInterrupt):
+            code, _, _ = self.run_cli("add", "--date", "2024-04-02", "--type", "expense",
+                                      "--category", "중단_카테고리", "--amount", "1000")
+        self.assertEqual(code, 130)
+        self.assertEqual(CategoryStore(self.data_dir).count_of("중단_카테고리"), 1)  # 실제로는 0건
+        code, out, _ = self.run_cli("category", "remove", "--name", "중단_카테고리")
+        self.assertEqual(code, 0)
+        self.assertIn("[삭제 완료]", out)
+
+        # 기록이 실제보다 적어(직접 편집 등) 줄이다가 0 아래로 내려가면, 알아채고 처음부터 다시 센다
+        self._add("tmp2", "2024-04-03", "expense", "식비", "1000")
+        categories = self.data_dir / "categories.jsonl"
+        rows = [json.loads(line) for line in categories.read_text(encoding="utf-8").splitlines()]
+        for row in rows:
+            row["count"] = 0
+        categories.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+        self.assertEqual(self.run_cli("delete", "--id", self.ids["tmp2"], "--yes")[0], 0)  # 식비 0 → -1
+        saved, actual = self._category_counts()
+        self.assertEqual(saved, actual)
+
+        # 건수 기록 이전 형식(count 없음)이면 다음 실행 때 한 번 세어 채운다
+        for row in rows:
+            del row["count"]
+        categories.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+        self.assertEqual(self.run_cli("category", "list")[0], 0)
+        saved, actual = self._category_counts()
+        self.assertEqual(saved, actual)
+
+        # compact 는 건수를 처음부터 다시 맞춘다
+        CategoryStore(self.data_dir).set_counts({"식비": 999})
+        self.assertEqual(self.run_cli("compact")[0], 0)
+        saved, actual = self._category_counts()
+        self.assertEqual(saved, actual)
 
     def test_130_applied_backup(self) -> None:
         code, out, _ = self.run_cli("backup")

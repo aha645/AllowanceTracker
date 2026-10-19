@@ -52,6 +52,7 @@ def cmd_export(ctx: AppContext, args: argparse.Namespace) -> int:
 def cmd_compact(ctx: AppContext, args: argparse.Namespace) -> int:
     """오래된(고아) 레코드를 정리해 로그 파일을 다시 쓴다."""
     before = ctx.repo.compact()
+    ctx.transactions.recount_categories()  # 어긋났을 수 있는 카테고리 사용 건수도 이때 다시 센다
     after = ctx.repo.stats()
     saved = before.log_size - after.log_size
     print("[완료] compact")

@@ -356,6 +356,13 @@ class TransactionRepository:
                     continue
                 yield self._read_at(log, start, end)
 
+    def category_counts(self) -> dict[str, int]:
+        """살아있는 거래를 처음부터 세어 카테고리별 건수를 돌려준다(O(n), 기록을 다시 맞출 때만 쓴다)."""
+        counts: dict[str, int] = {}
+        for tx in self._iter_live_by_id():
+            counts[tx.category] = counts.get(tx.category, 0) + 1
+        return counts
+
     def rebuild_date_index(self) -> None:
         """transactions.jsonl/idx 로부터 날짜 인덱스를 처음부터 다시 만든다."""
         self.date_index.rebuild(self._live_date_entries())

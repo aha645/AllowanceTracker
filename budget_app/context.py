@@ -39,6 +39,7 @@ class AppContext:
         budgets.ensure_file()
         recurring_store.ensure_file()
         tx_service = TransactionService(repo, categories)
+        tx_service.ensure_category_counts()
         return cls(
             data_dir=data_dir,
             repo=repo,

@@ -9,7 +9,7 @@ from __future__ import annotations
 import calendar
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable, Iterator
+from typing import Iterable, Iterator, Mapping
 
 from .models import (
     TYPE_INCOME,
@@ -145,12 +145,36 @@ class TransactionService:
             tags=tag_list,
         )
 
+    # ------------------------------------------------------------- 카테고리 사용 건수
+    # 거래 파일과 categories.jsonl 은 따로 저장돼 중간에 꺼지면 어긋날 수 있다. 그래서 건수는
+    # "늘릴 때는 거래보다 먼저, 줄일 때는 거래보다 나중에" 바꿔 실제보다 많게만 틀리게 한다.
+    # 많게 틀리면 안 쓰는 카테고리 삭제가 확인 한 번 더 거치는 정도지만, 적게 틀리면 사용 중인
+    # 카테고리를 지울 수 있기 때문이다.
+    def _adjust_category_counts(self, deltas: Mapping[str, int]) -> None:
+        if not self.categories.adjust_counts(deltas):
+            self.recount_categories()  # 기록이 실제보다 적었다(직접 편집 등) → 처음부터 다시 센다
+
+    def recount_categories(self) -> None:
+        """거래를 처음부터 세어 카테고리별 사용 건수를 다시 맞춘다(compact, 기록이 어긋났을 때)."""
+        self.categories.set_counts(self.repo.category_counts())
+
+    def ensure_category_counts(self) -> None:
+        """건수 기록 이전에 만든 categories.jsonl 이면 한 번 세어 채운다(없으면 0 으로 읽혀 위험)."""
+        if not self.categories.has_counts():
+            self.recount_categories()
+
     # ------------------------------------------------------------- CRUD
     def add(self, tx: Transaction) -> Transaction:
+        self._adjust_category_counts({tx.category: 1})  # 거래보다 먼저(위 설명)
         return self.repo.append_transaction(tx)
 
-    def add_many(self, transactions: Iterable[Transaction]) -> int:
-        """여러 거래를 한 번에 저장하고 건수를 돌려준다(import 용: 날짜 인덱스를 한 번만 병합)."""
+    def add_many(self, transactions: Iterable[Transaction], category_counts: Mapping[str, int]) -> int:
+        """여러 거래를 한 번에 저장하고 건수를 돌려준다(import 용: 날짜 인덱스를 한 번만 병합).
+
+        category_counts 는 저장할 거래의 카테고리별 건수다. 행마다 categories.jsonl 을 다시 쓰지 않도록
+        호출자가 미리 합산해 넘기고, 여기서 거래보다 먼저 한 번만 반영한다.
+        """
+        self._adjust_category_counts(category_counts)
         return self.repo.append_transactions(transactions)
 
     def update(
@@ -185,11 +209,18 @@ class TransactionService:
                 "--date/--type/--category/--amount/--memo/--tags 중 최소 하나를 지정하세요.",
             )
         updated = current.replace_fields(**changes)
+        moved = updated.category != current.category
+        if moved:
+            self._adjust_category_counts({updated.category: 1})  # 새 카테고리는 거래보다 먼저 늘리고
         self.repo.update_transaction(updated)
+        if moved:
+            self._adjust_category_counts({current.category: -1})  # 옛 카테고리는 거래 다음에 줄인다
         return current, updated
 
     def delete(self, tx_id: int) -> Transaction:
-        return self.repo.delete_transaction(tx_id)
+        deleted = self.repo.delete_transaction(tx_id)
+        self._adjust_category_counts({deleted.category: -1})  # 거래보다 나중(위 설명)
+        return deleted
 
     # ------------------------------------------------------------- 조회
     def iter_latest(self, limit: int | None = None) -> Iterator[Transaction]:
@@ -214,7 +245,14 @@ class TransactionService:
                 return
 
     def is_category_in_use(self, name: str) -> Transaction | None:
-        """해당 카테고리를 쓰는 거래를 하나라도 찾으면 그 거래를 돌려준다(조기 종료)."""
+        """해당 카테고리를 쓰는 거래를 하나라도 찾으면 그 거래를 돌려준다.
+
+        기록된 건수가 0 이면 거래를 훑지 않고 바로 None(미사용). 건수는 실제보다 적게 틀리지 않도록
+        갱신하므로 0 은 믿을 수 있다. 0 이 아니면 최신 거래부터 훑어 확인한다. 쓰는 카테고리는 대개
+        최근 거래에서 금방 찾고, 끝까지 없으면 기록이 많게 틀린 것(저장 도중 중단 등)이라 미사용으로 본다.
+        """
+        if self.categories.count_of(name) == 0:
+            return None
         for tx in self.repo.iter_latest_transactions():
             if tx.category == name:
                 return tx

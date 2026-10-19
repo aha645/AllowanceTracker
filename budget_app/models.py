@@ -112,13 +112,18 @@ class Category:
 
     name: str
     created_at: str = ""
+    #: 이 카테고리를 쓰는 살아있는 거래 수. 삭제 가능 여부를 거래를 훑지 않고 판단하는 데 쓴다.
+    #: 저장 도중 꺼지면 실제보다 많을 수는 있어도 적지는 않게 갱신한다(TransactionService 참고).
+    count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "Category":
-        return cls(name=str(raw["name"]), created_at=str(raw.get("created_at", "")))
+        return cls(
+            name=str(raw["name"]), created_at=str(raw.get("created_at", "")), count=int(raw.get("count", 0))
+        )
 
 
 @dataclass(slots=True)

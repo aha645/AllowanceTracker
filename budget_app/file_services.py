@@ -52,19 +52,22 @@ class CsvService:
         known = set(self.service.categories.names())
         errors: list[tuple[int, str]] = []
         skipped = 0
-        valid_count = 0
+        # 유효한 행의 카테고리별 건수. 1차에서 합산해 두었다가 거래를 쓰기 전에 한 번만 저장한다
+        # (행마다 categories.jsonl 을 다시 쓰지 않도록). 카테고리 수만큼만 차지한다.
+        category_counts: dict[str, int] = {}
         for lineno, result in self._iter_rows(source, known):
             if isinstance(result, ValidationError):
                 skipped += 1
                 if len(errors) < MAX_REPORTED_ERRORS:
                     errors.append((lineno, result.message))
             else:
-                valid_count += 1
+                category_counts[result.category] = category_counts.get(result.category, 0) + 1
         imported = 0
-        if valid_count:
+        if category_counts:
             # 옛 날짜가 섞여 있어도 날짜 인덱스는 add_many 안에서 한 번만 병합된다
             imported = self.service.add_many(
-                tx for _, tx in self._iter_rows(source, known) if isinstance(tx, Transaction)
+                (tx for _, tx in self._iter_rows(source, known) if isinstance(tx, Transaction)),
+                category_counts,
             )
         return ImportReport(imported=imported, skipped=skipped, errors=errors)
 
