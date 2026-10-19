@@ -386,19 +386,28 @@ class RecurringService:
         month = validate_month(month)
         created: list[Transaction] = []
         skipped: list[RecurringRule] = []
+        # 거래 저장과 규칙의 "이번 달 적용함" 기록은 다른 파일이라 그 사이에 꺼질 수 있다. 예전에는
+        # 그러면 다시 apply 할 때 같은 거래가 또 생겼다. 그래서 만든 거래에 규칙/월 표시(source)를 남기고,
+        # 그 달에 이미 그 표시의 거래가 있으면 새로 만들지 않고 기록만 마저 한다. 그 달 구간만 읽는다.
+        bounds = SearchCriteria(month=month).date_bounds()
+        made = {tx.source for tx in self.service.repo.iter_latest_transactions(*bounds) if tx.source}
         for rule in self.store.list_all():
             if month in rule.applied_months:
                 skipped.append(rule)
                 continue
-            tx = self.service.build_transaction(
-                date=self._clamp_day(month, rule.day),
-                type_=rule.type,
-                category=rule.category,
-                amount=rule.amount,
-                memo=rule.memo,
-                tags=format_tags(rule.tags),
-            )
-            created.append(self.service.add(tx))
+            source = f"{rule.display_id}/{month}"
+            if source in made:  # 거래는 저장됐는데 기록 전에 중단됐던 규칙
+                skipped.append(rule)
+            else:
+                tx = self.service.build_transaction(
+                    date=self._clamp_day(month, rule.day),
+                    type_=rule.type,
+                    category=rule.category,
+                    amount=rule.amount,
+                    memo=rule.memo,
+                    tags=format_tags(rule.tags),
+                )
+                created.append(self.service.add(tx.replace_fields(source=source)))
             rule.applied_months.append(month)
             self.store.save(rule)
         return created, skipped

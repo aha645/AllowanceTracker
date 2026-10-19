@@ -670,6 +670,22 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertIn("생성 0건", out)
         self.assertIn("건너뜀 1건", out)
 
+        # 거래를 저장한 뒤 규칙에 "적용함"을 기록하기 전에 꺼져도, 다시 apply 할 때 중복으로 만들지 않는다
+        def april_ids() -> list[str]:
+            out = self.run_cli("search", "--month", "2024-04", "--all")[1]
+            return re.findall(r"^\s*\d+\s+(TX-\d+)\s", out, re.M)
+
+        with mock.patch.object(RecurringStore, "save", side_effect=KeyboardInterrupt):
+            self.assertEqual(self.run_cli("recurring", "apply", "--month", "2024-04")[0], 130)
+        self.assertEqual(len(april_ids()), 1)  # 거래는 저장됨
+        code, out, _ = self.run_cli("recurring", "apply", "--month", "2024-04")
+        self.assertIn("생성 0건", out)
+        self.assertIn("건너뜀 1건", out)
+        self.assertEqual(len(april_ids()), 1)  # 한 건 그대로
+        self.assertIn("2024-04", RecurringStore(self.data_dir).get(int(self._id("rule")[3:])).applied_months)
+        # 뒤 테스트(150)는 2024-03-01 거래가 가장 최신이라고 가정하므로 이 달 거래는 지운다
+        self.assertEqual(self.run_cli("delete", "--id", april_ids()[0], "--yes")[0], 0)
+
         self.assertEqual(self.run_cli("recurring", "remove", "--id", self._id("rule"))[0], 0)
         self.assertNotIn(self._id("rule"), self.run_cli("recurring", "list")[1])
 

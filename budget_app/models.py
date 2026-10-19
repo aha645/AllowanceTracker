@@ -53,6 +53,9 @@ class Transaction:
     amount: int
     memo: str = ""
     tags: list[str] = field(default_factory=list)
+    #: 반복 규칙이 만든 거래면 "RC-1/2024-03"(규칙/월). recurring apply 가 중단 뒤 다시 실행될 때
+    #: 같은 거래를 또 만들지 않도록 알아보는 표시다. 직접 등록한 거래는 빈 문자열(저장하지 않음).
+    source: str = ""
 
     @property
     def display_id(self) -> str:
@@ -65,7 +68,10 @@ class Transaction:
         return self.date[:7]
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        if not self.source:  # 대부분의 거래엔 없으므로 줄마다 빈 필드를 남기지 않는다
+            del data["source"]
+        return data
 
     def to_json(self) -> str:
         """저장용 JSON 한 줄(개행 없음)."""
@@ -86,6 +92,7 @@ class Transaction:
                 amount=int(raw["amount"]),
                 memo=str(raw.get("memo", "")),
                 tags=[str(t) for t in raw.get("tags", [])],
+                source=str(raw.get("source", "")),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise StorageError(
