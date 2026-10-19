@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
@@ -119,21 +120,35 @@ class CsvService:
         if target.parent and not target.parent.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
         count = 0
-        with target.open("w", encoding="utf-8", newline="") as fp:
-            writer = csv.DictWriter(fp, fieldnames=list(CSV_FIELDS))
-            writer.writeheader()
-            for tx in transactions:
-                writer.writerow(
-                    {
-                        "date": tx.date,
-                        "type": tx.type,
-                        "category": tx.category,
-                        "amount": tx.amount,
-                        "memo": tx.memo,
-                        "tags": format_tags(tx.tags),
-                    }
-                )
-                count += 1
+        # 같은 폴더의 임시 파일에 끝까지 쓰고 이름을 바꿔 교체한다. 예전에는 target 을 바로 열어 써서,
+        # 도중에 꺼지거나 오류가 나면 이미 있던 파일이 중간까지만 쓴 새 내용으로 바뀌어 있었다.
+        # 이름 바꾸기는 한순간이라 target 은 항상 원래 파일이거나 완성된 새 파일이다.
+        # 이름을 고정해 두면, 강제 종료로 남은 임시 파일도 다음에 같은 곳으로 내보낼 때 덮어써져 사라진다
+        tmp = target.with_name(f".{target.name}.tmp")
+        try:
+            with tmp.open("w", encoding="utf-8", newline="") as fp:
+                writer = csv.DictWriter(fp, fieldnames=list(CSV_FIELDS))
+                writer.writeheader()
+                for tx in transactions:
+                    writer.writerow(
+                        {
+                            "date": tx.date,
+                            "type": tx.type,
+                            "category": tx.category,
+                            "amount": tx.amount,
+                            "memo": tx.memo,
+                            "tags": format_tags(tx.tags),
+                        }
+                    )
+                    count += 1
+                fp.flush()
+                os.fsync(fp.fileno())
+            if target.exists():
+                shutil.copymode(target, tmp)  # 덮어쓸 때 원래 파일의 권한을 유지한다
+            os.replace(tmp, target)
+        except BaseException:  # Ctrl+C 포함: 반쯤 쓴 임시 파일을 남기지 않는다
+            tmp.unlink(missing_ok=True)
+            raise
         return count
 
 

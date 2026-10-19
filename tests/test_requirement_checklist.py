@@ -471,6 +471,14 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual({r["category"] for r in rows}, {"식비", "월급", "월세"})
         self.assertEqual(next(r for r in rows if r["category"] == "식비")["amount"], "15000")
 
+        # 이미 있는 파일에 내보내다 중간에 멈춰도 원래 파일은 그대로이고 임시 파일도 남지 않는다
+        original = target.read_text(encoding="utf-8")
+        with mock.patch("budget_app.file_services.format_tags", side_effect=KeyboardInterrupt):
+            code, _, _ = self.run_cli("export", "--out", str(target), "--month", "2024-02")
+        self.assertEqual(code, 130)
+        self.assertEqual(target.read_text(encoding="utf-8"), original)
+        self.assertFalse((self.data_dir / ".export_range.csv.tmp").exists())
+
         code, _, err = self.run_cli("export", "--out", str(self.data_dir / "none.csv"))  # 조건 필수
         self.assertEqual(code, 1)
         self.assertIn("[오류]", err)
