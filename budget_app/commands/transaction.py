@@ -144,13 +144,21 @@ def cmd_list(ctx: AppContext, args: argparse.Namespace) -> int:
     """거래 목록(최신순)."""
     limit = None if args.all else args.limit
     count = render_transactions(ctx.transactions.iter_latest(limit))
-    if count == 0:
+    total_live = ctx.repo.stats().live_count
+    if count == 0 and total_live == 0:
         print("[안내] 등록된 거래가 없습니다.")
         print("[힌트] `add` 명령으로 거래를 추가하세요.")
         return EXIT_OK
-    total_live = ctx.repo.stats().live_count
-    suffix = f" / 전체 {total_live}건" if limit is not None and count < total_live else ""
-    print(f"\n[완료] {count}건 출력{suffix}")
+    if count:
+        suffix = f" / 전체 {total_live}건" if limit is not None and count < total_live else ""
+        print(f"\n[완료] {count}건 출력{suffix}")
+    # 목록은 날짜 인덱스를, 전체 건수는 위치 인덱스(transactions.idx)를 센다. 끝까지 읽었는데(limit 에서
+    # 멈추지 않음) 둘이 다르면 날짜 인덱스가 손상돼 거래가 빠진 것이다. 읽는 중에는 수정 전 옛 항목과
+    # 구분할 수 없어 조용히 건너뛰므로, 여기서 건수로 잡아 알린다(빠진 거래가 있어도 이 외에는 신호가 없다).
+    read_to_end = limit is None or count < limit
+    if read_to_end and count != total_live:
+        print(f"[경고] 날짜 인덱스와 저장된 거래 수가 맞지 않습니다 (목록 {count}건, 저장 {total_live}건).")
+        print("[힌트] compact 를 실행하면 날짜 인덱스를 원본에서 다시 만듭니다.")
     return EXIT_OK
 
 

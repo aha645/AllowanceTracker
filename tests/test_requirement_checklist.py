@@ -655,6 +655,20 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(self.run_cli("compact")[0], 0)
         self.assertEqual(self._listed_ids(), order)
 
+        # 날짜 항목이 다른 거래를 가리키게 손상되면(읽는 중엔 옛 항목과 구분 불가) list 가 건수로 알아챈다
+        good = date_idx.read_bytes()
+        last_ordinal, _ = DATE_ENTRY_STRUCT.unpack(good[-12:])
+        _, other_id = DATE_ENTRY_STRUCT.unpack(good[:12])
+        date_idx.write_bytes(good[:-12] + DATE_ENTRY_STRUCT.pack(last_ordinal, other_id))
+        code, out, _ = self.run_cli("list", "--all")
+        self.assertEqual(code, 0)
+        self.assertIn("[경고] 날짜 인덱스와 저장된 거래 수가 맞지 않습니다", out)
+        self.assertIn("compact", out)
+        self.assertNotIn("[경고]", self.run_cli("list", "--limit", "1")[1])  # limit 에서 멈추면 판단하지 않는다
+        self.assertEqual(self.run_cli("compact")[0], 0)
+        self.assertNotIn("[경고]", self.run_cli("list", "--all")[1])
+        self.assertEqual(self._listed_ids(), order)
+
 
 if __name__ == "__main__":
     unittest.main()
