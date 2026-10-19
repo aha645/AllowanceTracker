@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import struct
 from array import array
 from dataclasses import dataclass
@@ -75,6 +76,15 @@ def _unique(sorted_keys: Iterable[int]) -> Iterator[int]:
             prev = key
 
 
+def _fsync_dir(path: Path) -> None:
+    """폴더의 이름 바꾸기/삭제를 디스크에 확정한다. 안 하면 os.replace 가 꺼진 뒤 되돌아갈 수 있다."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def date_ordinal(value: str) -> int:
     """`YYYY-MM-DD` 문자열을 날짜 순번(정수)으로 바꾼다."""
     try:
@@ -97,6 +107,24 @@ class TransactionIndex:
         if not self.path.exists():
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.touch()
+
+    def drop_partial_slot(self) -> int:
+        """끝에 덜 써진 슬롯 조각이 있으면 잘라 내고, 잘라 낸 바이트 수를 돌려준다.
+
+        슬롯은 끝에만 덧붙이고 슬롯을 쓰는 순간이 저장 완료이므로(모듈 설명), 16바이트가 안 되는
+        끝 조각은 add/import 가 슬롯을 쓰다 꺼진 "완료되지 않은 저장"이다. 잘라 내면 그 저장은 없던
+        일이 되고, 남은 jsonl 줄과 날짜 항목은 읽을 때 건너뛰다 compact 때 정리된다. 예전에는 이 상태에서
+        모든 명령이 "백업본으로 복구하세요" 오류로 멈췄다.
+        """
+        if not self.path.exists():
+            return 0
+        extra = self.size() % SLOT_SIZE
+        if extra:
+            with self.path.open("r+b") as fp:
+                fp.truncate(self.size() - extra)
+                fp.flush()
+                os.fsync(fp.fileno())
+        return extra
 
     def size(self) -> int:
         try:
@@ -323,6 +351,11 @@ class TransactionRepository:
         self.index: TransactionIndex = TransactionIndex(self.idx_path)
         self.date_idx_path: Path = self.data_dir / self.DATE_IDX_NAME
         self.date_index: DateIndex = DateIndex(self.date_idx_path)
+        # compact 가 위치 인덱스를 고치기 전에 만들어 두는 복사본. 이 파일이 있으면 compact 가 끝나지 않은 것이다.
+        self.compact_backup_path: Path = self.data_dir / (self.IDX_NAME + ".compact-backup")
+        self.compact_tmp_log_path: Path = self.log_path.with_suffix(".jsonl.tmp")
+        #: 이번 실행에서 자동으로 바로잡은 일(사용자에게 [안내] 로 알린다).
+        self.recovered: list[str] = []
 
     # ------------------------------------------------------------------ 초기화
     def ensure_files(self) -> None:
@@ -330,7 +363,10 @@ class TransactionRepository:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         if not self.log_path.exists():
             self.log_path.touch()
+        self._recover_interrupted_compact()  # 위치 인덱스를 통째로 되돌릴 수 있으므로 가장 먼저
         self.index.ensure()
+        if self.index.drop_partial_slot():
+            self.recovered.append("끝나지 않은 마지막 저장(add/import)의 조각을 정리했습니다. 그 거래는 저장되지 않았습니다.")
         # 날짜 인덱스가 없거나 손상됐으면(예: 이 인덱스가 생기기 전의 데이터) 원본에서 자동 재생성한다.
         if not self.date_index.is_valid():
             self.rebuild_date_index()
@@ -575,7 +611,17 @@ class TransactionRepository:
         """
         self.ensure_files()
         before = self.stats()
-        tmp_path = self.log_path.with_suffix(".jsonl.tmp")
+        tmp_path = self.compact_tmp_log_path
+        # 아래 반복문은 위치 인덱스의 슬롯을 하나씩 제자리에서 고쳐서, 도중에 꺼지면 일부 슬롯만 새 로그
+        # 위치를 가리킨 채 옛 로그와 짝지어진다(엉뚱한 곳을 읽음). 그래서 고치기 전에 복사본을 만들고,
+        # 다음 실행 때 _recover_interrupted_compact() 가 복사본으로 되돌린다. 임시 이름으로 다 쓰고
+        # 확정한 뒤 이름을 바꾸므로, 복사본 이름의 파일이 있으면 그 복사본은 항상 완전하다.
+        backup_tmp = self.compact_backup_path.with_name(self.compact_backup_path.name + ".tmp")
+        shutil.copyfile(self.idx_path, backup_tmp)
+        with backup_tmp.open("rb") as fp:
+            os.fsync(fp.fileno())
+        os.replace(backup_tmp, self.compact_backup_path)
+        _fsync_dir(self.data_dir)
         with self.idx_path.open("r+b") as idx, self.log_path.open("rb") as src, tmp_path.open(
             "wb"
         ) as dst:
@@ -599,6 +645,31 @@ class TransactionRepository:
             os.fsync(dst.fileno())
             idx.flush()
             os.fsync(idx.fileno())
-        os.replace(tmp_path, self.log_path)
+        os.replace(tmp_path, self.log_path)  # 이 순간이 완료. 이후로는 새 로그와 새 위치 인덱스가 짝이다
+        _fsync_dir(self.data_dir)  # 교체를 확정한 뒤에 복사본을 지워야, 꺼져도 옛 로그+새 인덱스가 되지 않는다
+        self.compact_backup_path.unlink()
+        _fsync_dir(self.data_dir)
         self.rebuild_date_index()  # 삭제/옛 날짜 항목을 정리하고 새 로그 기준으로 다시 만든다
         return before
+
+    def _recover_interrupted_compact(self) -> None:
+        """끝나지 않은 compact 를 정리한다. 복사본이 있으면 임시 로그가 남았는지로 어디서 멈췄는지 판단한다.
+
+        - 임시 로그가 남음: 로그 교체 전에 멈춤 → 위치 인덱스를 복사본으로 되돌리고 임시 로그를 지운다
+          (compact 전 상태. 옛 줄 정리만 안 된 것이라 잃는 데이터는 없다).
+        - 임시 로그가 없음: 교체는 끝나고 복사본 삭제 전에 멈춤 → 새 로그와 새 인덱스가 이미 짝이라 복사본만 지운다.
+        """
+        backup_tmp = self.compact_backup_path.with_name(self.compact_backup_path.name + ".tmp")
+        if backup_tmp.exists():  # 복사본을 만드는 중에 멈춤. 위치 인덱스는 아직 그대로라 지우기만 하면 된다
+            backup_tmp.unlink()
+        if self.compact_backup_path.exists():
+            if self.compact_tmp_log_path.exists():
+                os.replace(self.compact_backup_path, self.idx_path)
+                self.compact_tmp_log_path.unlink()
+                self.recovered.append("지난 compact 가 끝나지 않아 compact 전 상태로 되돌렸습니다. 다시 실행하세요.")
+            else:
+                self.compact_backup_path.unlink()
+                self.recovered.append("지난 compact 의 마무리(복사본 정리)를 끝냈습니다.")
+            _fsync_dir(self.data_dir)
+        elif self.compact_tmp_log_path.exists():  # 복사본 없이 남은 임시 로그는 쓰이지 않은 찌꺼기다
+            self.compact_tmp_log_path.unlink()

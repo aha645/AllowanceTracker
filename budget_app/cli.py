@@ -237,4 +237,6 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
 
     ctx = AppContext.create(Path(args.data_dir))
+    for note in ctx.repo.recovered:  # 지난 실행이 중간에 꺼져 시작할 때 자동으로 바로잡은 것
+        print(f"[안내] {note}")
     return int(args.func(ctx, args))

@@ -44,6 +44,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import re
 import shutil
 import sys
@@ -59,6 +60,7 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+from budget_app import repository
 from budget_app.cli import main
 from budget_app.commands.transaction import cmd_add
 from budget_app.repository import DATE_ENTRY_STRUCT, DateIndex, TransactionRepository
@@ -589,6 +591,56 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(self.run_cli("compact")[0], 0)
         saved, actual = self._category_counts()
         self.assertEqual(saved, actual)
+
+        # 위치 인덱스 끝에 덜 써진 슬롯 조각(add/import 가 슬롯을 쓰다 꺼짐)은 잘라 내고 계속한다
+        listing = self.run_cli("list", "--all")[1]
+        idx.write_bytes(idx.read_bytes() + b"\x01" * 8)
+        code, out, _ = self.run_cli("list", "--all")
+        self.assertEqual(code, 0)
+        self.assertIn("[안내] 끝나지 않은 마지막 저장", out)
+        self.assertEqual(idx.stat().st_size % 16, 0)
+        self.assertEqual(self.run_cli("list", "--all")[1], listing)  # 저장된 거래는 그대로
+
+        # compact 가 위치 인덱스를 고친 뒤 로그 교체 전에 꺼지면, 다음 실행 때 compact 전 상태로 되돌린다
+        for amount in ("15001", "15000"):  # 바꿨다 되돌려 내용은 같고 정리할 옛 줄만 생기게 한다
+            with self.fake_input(["", "", "", amount, "", ""]):
+                self.assertEqual(self.run_cli("update", "--id", self._id("a"))[0], 0)
+        before_idx = idx.read_bytes()
+        real_replace = os.replace
+
+        def stop_at_log_replace(src, dst):  # type: ignore[no-untyped-def]
+            if Path(dst) == log:
+                raise KeyboardInterrupt  # 강제 종료 흉내
+            return real_replace(src, dst)
+
+        with mock.patch("budget_app.repository.os.replace", side_effect=stop_at_log_replace):
+            self.assertEqual(self.run_cli("compact")[0], 130)
+        self.assertNotEqual(idx.read_bytes(), before_idx)  # 슬롯은 새 로그 위치로 바뀌었는데 로그는 옛것
+        code, out, _ = self.run_cli("list", "--all")
+        self.assertEqual(code, 0)
+        self.assertIn("[안내] 지난 compact 가 끝나지 않아 compact 전 상태로 되돌렸습니다", out)
+        self.assertEqual(idx.read_bytes(), before_idx)
+        self.assertEqual(self.run_cli("list", "--all")[1], listing)
+        self.assertFalse((self.data_dir / "transactions.idx.compact-backup").exists())
+        self.assertFalse((self.data_dir / "transactions.jsonl.tmp").exists())
+
+        # 로그 교체는 끝나고 복사본을 지우기 전에 꺼지면, 이미 짝이 맞으므로 복사본만 지운다
+        calls: list[int] = []
+        real_fsync_dir = repository._fsync_dir
+
+        def stop_after_log_replace(path):  # type: ignore[no-untyped-def]
+            calls.append(1)
+            if len(calls) == 2:  # 1번째: 복사본 이름 확정, 2번째: 로그 교체 확정
+                raise KeyboardInterrupt
+            return real_fsync_dir(path)
+
+        with mock.patch("budget_app.repository._fsync_dir", side_effect=stop_after_log_replace):
+            self.assertEqual(self.run_cli("compact")[0], 130)
+        self.assertTrue((self.data_dir / "transactions.idx.compact-backup").exists())
+        code, out, _ = self.run_cli("list", "--all")
+        self.assertIn("[안내] 지난 compact 의 마무리", out)
+        self.assertFalse((self.data_dir / "transactions.idx.compact-backup").exists())
+        self.assertEqual(self.run_cli("list", "--all")[1], listing)
 
     def test_130_applied_backup(self) -> None:
         code, out, _ = self.run_cli("backup")
