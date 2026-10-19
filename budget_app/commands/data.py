@@ -11,8 +11,6 @@ from ..formatter import format_amount, format_table
 from ..models import ValidationError
 from .transaction import build_criteria
 
-MAX_SHOWN_ERRORS = 20
-
 
 @command
 def cmd_import(ctx: AppContext, args: argparse.Namespace) -> int:
@@ -21,10 +19,10 @@ def cmd_import(ctx: AppContext, args: argparse.Namespace) -> int:
     print(f"[완료] {args.source} → imported={report.imported}, skipped={report.skipped}")
     if report.errors:
         print("\n[건너뛴 행]")
-        rows = [[str(lineno), message] for lineno, message in report.errors[:MAX_SHOWN_ERRORS]]
+        rows = [[str(lineno), message] for lineno, message in report.errors]
         print(format_table(["행", "사유"], rows, ["right", "left"]))
-        if len(report.errors) > MAX_SHOWN_ERRORS:
-            print(f"... 외 {len(report.errors) - MAX_SHOWN_ERRORS}건")
+        if report.skipped > len(report.errors):
+            print(f"... 외 {report.skipped - len(report.errors)}건")
     return EXIT_OK
 
 

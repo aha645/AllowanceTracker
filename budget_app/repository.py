@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import os
 import struct
+from array import array
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from itertools import chain
 from typing import BinaryIO, Iterable, Iterator
 
 from .models import NotFoundError, StorageError, Transaction
@@ -39,6 +41,32 @@ MERGE_CHUNK_ENTRIES = 4096
 
 #: (날짜 순번, 거래 id). 날짜 순번은 `date.toordinal()` 이다.
 DateEntry = tuple[int, int]
+
+_ID_BITS = 32
+_ID_MASK = (1 << _ID_BITS) - 1
+
+
+def entry_key(entry: DateEntry) -> int:
+    """(날짜 순번, id) 를 정렬 순서가 같은 정수 하나로 합친다.
+
+    많은 항목을 튜플(건당 약 120바이트) 대신 `array("q")`(건당 8바이트)에 담기 위한 것이다.
+    gotcha: id 가 2**32 미만이라고 가정한다(약 43억 건).
+    """
+    ordinal, tx_id = entry
+    return ordinal << _ID_BITS | tx_id
+
+
+def _pack_key(key: int) -> bytes:
+    return DATE_ENTRY_STRUCT.pack(key >> _ID_BITS, key & _ID_MASK)
+
+
+def _unique(sorted_keys: Iterable[int]) -> Iterator[int]:
+    """정렬된 키에서 연속 중복을 뺀다."""
+    prev: int | None = None
+    for key in sorted_keys:
+        if key != prev:
+            yield key
+            prev = key
 
 
 def date_ordinal(value: str) -> int:
@@ -185,24 +213,29 @@ class DateIndex:
             return self._read(fp, total - 1)
 
     def merge(self, entries: Iterable[DateEntry]) -> None:
-        """새 항목들을 정렬 상태를 유지하며 끼워 넣는다(이미 있는 항목은 무시).
+        """새 항목들을 정렬 상태를 유지하며 끼워 넣는다(이미 있는 항목은 무시)."""
+        self.merge_keys(array("q", (entry_key(e) for e in entries)))
+
+    def merge_keys(self, keys: array[int]) -> None:
+        """`entry_key()` 정수 키 배열을 병합한다(import 처럼 항목이 많을 때 튜플 대신 쓴다).
 
         모두 마지막 항목보다 크면(평소 add) 끝에 append 만 한다. 그렇지 않으면(옛 날짜 거래/import)
         기존 파일을 한 번만 훑으며 병합해 임시 파일에 쓰고 os.replace 로 교체한다. O(n+m).
         """
-        new = sorted(set(entries))
-        if not new:
+        if not keys:
             return
+        # 정렬하는 동안만 정수 리스트가 생기고, 바로 8바이트 배열로 되돌린다
+        new = array("q", sorted(keys))
         self.path.parent.mkdir(parents=True, exist_ok=True)
         last = self._last() if self.path.exists() else None
-        if last is None or new[0] > last:
+        if last is None or new[0] > entry_key(last):
             with self.path.open("ab") as fp:
-                fp.write(b"".join(DATE_ENTRY_STRUCT.pack(*e) for e in new))
+                self._write_keys(fp, _unique(new))
                 fp.flush()
                 os.fsync(fp.fileno())
             return
         tmp_path = self.path.with_name(self.path.name + ".tmp")
-        pending = iter(new)
+        pending = _unique(new)
         nxt = next(pending, None)
         with self.path.open("rb") as src, tmp_path.open("wb") as dst:
             while True:
@@ -211,19 +244,31 @@ class DateIndex:
                     break
                 out: list[bytes] = []
                 for cur in DATE_ENTRY_STRUCT.iter_unpack(chunk):
-                    while nxt is not None and nxt < cur:
-                        out.append(DATE_ENTRY_STRUCT.pack(*nxt))
+                    cur_key = entry_key(cur)
+                    while nxt is not None and nxt < cur_key:
+                        out.append(_pack_key(nxt))
                         nxt = next(pending, None)
-                    if nxt == cur:  # 이미 있는 항목
+                    if nxt == cur_key:  # 이미 있는 항목
                         nxt = next(pending, None)
                     out.append(DATE_ENTRY_STRUCT.pack(*cur))
                 dst.write(b"".join(out))
-            while nxt is not None:
-                dst.write(DATE_ENTRY_STRUCT.pack(*nxt))
-                nxt = next(pending, None)
+            if nxt is not None:
+                self._write_keys(dst, chain([nxt], pending))
             dst.flush()
             os.fsync(dst.fileno())
         os.replace(tmp_path, self.path)
+
+    @staticmethod
+    def _write_keys(fp: BinaryIO, keys: Iterable[int]) -> None:
+        """키를 MERGE_CHUNK_ENTRIES 개씩 묶어 쓴다(한 번에 join 하면 건마다 bytes 객체가 쌓인다)."""
+        out: list[bytes] = []
+        for key in keys:
+            out.append(_pack_key(key))
+            if len(out) >= MERGE_CHUNK_ENTRIES:
+                fp.write(b"".join(out))
+                out.clear()
+        if out:
+            fp.write(b"".join(out))
 
     def rebuild(self, entries: Iterable[DateEntry]) -> None:
         """항목 전체로 파일을 처음부터 다시 만든다(임시 파일 + os.replace)."""
@@ -347,8 +392,9 @@ class TransactionRepository:
         self.ensure_files()
         next_id = self.index.next_id()
         count = 0
-        slots: list[bytes] = []
-        entries: list[DateEntry] = []
+        # 건마다 객체를 만들지 않도록 위치 슬롯은 bytearray, 날짜 항목은 정수 배열에 이어 붙인다
+        slots = bytearray()
+        keys = array("q")
         with self.log_path.open("ab") as log:
             log.seek(0, os.SEEK_END)
             offset = log.tell()
@@ -356,19 +402,19 @@ class TransactionRepository:
                 stored = tx.replace_fields(id=next_id + count)
                 payload = stored.to_json().encode("utf-8")
                 log.write(payload + b"\n")
-                slots.append(SLOT_STRUCT.pack(offset, offset + len(payload)))
+                slots += SLOT_STRUCT.pack(offset, offset + len(payload))
                 offset += len(payload) + 1
                 count += 1
-                entries.append((date_ordinal(stored.date), stored.id))
+                keys.append(entry_key((date_ordinal(stored.date), stored.id)))
             log.flush()
             os.fsync(log.fileno())
         if not count:
             return 0
         with self.idx_path.open("ab") as idx:
-            idx.write(b"".join(slots))
+            idx.write(slots)
             idx.flush()
             os.fsync(idx.fileno())
-        self.date_index.merge(entries)
+        self.date_index.merge_keys(keys)
         return count
 
     def update_transaction(self, tx: Transaction) -> Transaction:

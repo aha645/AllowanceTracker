@@ -403,6 +403,24 @@ class RequirementChecklistTestCase(unittest.TestCase):
         _, out, _ = self.run_cli("summary", "--month", "2024-02")
         self.assertIn("총 지출  8,000원", out)  # 그대로
 
+        # 잘못된 행이 많아도 사유는 앞쪽 20건만 담고 나머지는 건수만 센다
+        many_bad = self.data_dir / "many_bad.csv"
+        many_bad.write_text(
+            "date,type,category,amount,memo,tags\n" + "2024-13-01,expense,식비,1000,,\n" * 25, encoding="utf-8"
+        )
+        code, out, _ = self.run_cli("import", "--from", str(many_bad))
+        self.assertEqual(code, 0)
+        self.assertIn("imported=0, skipped=25", out)
+        self.assertIn("... 외 5건", out)
+
+        # 메모리 부족도 스택트레이스 없이 [오류]/[힌트] 로 알린다
+        with mock.patch.object(TransactionRepository, "append_transactions", side_effect=MemoryError):
+            code, _, err = self.run_cli("import", "--from", str(source))
+        self.assertEqual(code, 1)
+        self.assertIn("[오류] 메모리가 부족", err)
+        self.assertIn("[힌트]", err)
+        self.assertNotIn("Traceback", err)
+
     def test_095_export(self) -> None:
         target = self.data_dir / "export_2024_02.csv"
         code, out, _ = self.run_cli("export", "--out", str(target), "--month", "2024-02")

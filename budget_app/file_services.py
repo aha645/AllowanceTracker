@@ -14,6 +14,8 @@ from .services import TransactionService
 from .validators import format_tags
 
 CSV_FIELDS: tuple[str, ...] = ("date", "type", "category", "amount", "memo", "tags")
+#: import 결과에 사유까지 담아 둘 건너뛴 행 수. 나머지는 건수만 센다(잘못된 행이 많아도 메모리가 늘지 않게).
+MAX_REPORTED_ERRORS = 20
 
 
 @dataclass(slots=True)
@@ -22,6 +24,7 @@ class ImportReport:
 
     imported: int
     skipped: int
+    #: 건너뛴 행 중 앞쪽 최대 MAX_REPORTED_ERRORS 건의 (줄 번호, 사유)
     errors: list[tuple[int, str]]
 
 
@@ -48,10 +51,13 @@ class CsvService:
         # 행마다 categories.jsonl 을 열지 않도록 한 번만 읽어 둔다(10만 행이면 20만 번 열던 병목).
         known = set(self.service.categories.names())
         errors: list[tuple[int, str]] = []
+        skipped = 0
         valid_count = 0
         for lineno, result in self._iter_rows(source, known):
             if isinstance(result, ValidationError):
-                errors.append((lineno, result.message))
+                skipped += 1
+                if len(errors) < MAX_REPORTED_ERRORS:
+                    errors.append((lineno, result.message))
             else:
                 valid_count += 1
         imported = 0
@@ -60,7 +66,7 @@ class CsvService:
             imported = self.service.add_many(
                 tx for _, tx in self._iter_rows(source, known) if isinstance(tx, Transaction)
             )
-        return ImportReport(imported=imported, skipped=len(errors), errors=errors)
+        return ImportReport(imported=imported, skipped=skipped, errors=errors)
 
     def _iter_rows(
         self, source: Path, known: set[str]

@@ -63,6 +63,15 @@ def handle_errors(func: F) -> F:
             print(f"[오류] 입출력 오류가 발생했습니다: {exc}", file=sys.stderr)
             print("[힌트] 디스크 여유 공간과 저장 폴더 상태를 확인하세요.", file=sys.stderr)
             return EXIT_ERROR
+        except MemoryError:
+            logger.debug("%s 처리 중 메모리 부족", func.__name__, exc_info=True)
+            print("[오류] 메모리가 부족해 작업을 끝내지 못했습니다.", file=sys.stderr)
+            print(
+                "[힌트] 다른 프로그램을 닫거나, import 라면 CSV 를 나눠서 다시 시도하세요. "
+                "import 도중이었다면 compact 로 저장되다 만 줄을 정리할 수 있습니다.",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
         except (KeyboardInterrupt, EOFError):
             print()
             print("[중단] 사용자가 입력을 취소했습니다.", file=sys.stderr)
