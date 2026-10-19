@@ -774,6 +774,25 @@ class RequirementChecklistTestCase(unittest.TestCase):
             self.assertEqual(self.run_cli("import", "--from", str(source))[0], 130)
         self.assertEqual(self._listed_ids(), order)
 
+        # 슬롯 묶음을 다 썼어도 완료 기록을 지우기 전에 멈추면, 다음 실행 때 그 import 전체를 취소한다
+        two_rows = self.data_dir / "two_rows.csv"
+        two_rows.write_text("date,type,category,amount,memo,tags\n2024-01-11,expense,식비,100,,\n"
+                            "2024-01-12,expense,식비,200,,\n", encoding="utf-8")
+        with mock.patch.object(TransactionRepository, "_commit_import", side_effect=KeyboardInterrupt):
+            self.assertEqual(self.run_cli("import", "--from", str(two_rows))[0], 130)
+        code, out, _ = self.run_cli("list", "--all")
+        self.assertIn("[안내] 지난 import 가 끝나지 않아 그 import 전체를 취소했습니다", out)
+        self.assertEqual(self._listed_ids(), order)
+        self.assertFalse((self.data_dir / "transactions.idx.import-pending").exists())
+
+        # 슬롯 묶음을 쓰다 멈춰 일부(1개 반)만 써진 경우도 일부 행만 들어가지 않고 전체가 취소된다
+        idx_path = self.data_dir / "transactions.idx"
+        size_before = idx_path.stat().st_size
+        (self.data_dir / "transactions.idx.import-pending").write_text(str(size_before), encoding="utf-8")
+        idx_path.write_bytes(idx_path.read_bytes() + b"\x01" * 24)
+        self.assertEqual(self._listed_ids(), order)
+        self.assertEqual(idx_path.stat().st_size, size_before)
+
         with mock.patch.object(DateIndex, "merge", stop_after(DateIndex.merge)), \
                 self.fake_input(["2023-01-01", "", "", "", "", ""]):
             self.assertEqual(self.run_cli("update", "--id", self.ids["after_stop"])[0], 130)

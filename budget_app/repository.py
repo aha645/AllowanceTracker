@@ -112,7 +112,7 @@ class TransactionIndex:
         """끝에 덜 써진 슬롯 조각이 있으면 잘라 내고, 잘라 낸 바이트 수를 돌려준다.
 
         슬롯은 끝에만 덧붙이고 슬롯을 쓰는 순간이 저장 완료이므로(모듈 설명), 16바이트가 안 되는
-        끝 조각은 add/import 가 슬롯을 쓰다 꺼진 "완료되지 않은 저장"이다. 잘라 내면 그 저장은 없던
+        끝 조각은 add 가 슬롯을 쓰다 꺼진 "완료되지 않은 저장"이다(import 는 기록 파일로 묶음째 되돌린다). 잘라 내면 그 저장은 없던
         일이 되고, 남은 jsonl 줄과 날짜 항목은 읽을 때 건너뛰다 compact 때 정리된다. 예전에는 이 상태에서
         모든 명령이 "백업본으로 복구하세요" 오류로 멈췄다.
         """
@@ -354,6 +354,8 @@ class TransactionRepository:
         # compact 가 위치 인덱스를 고치기 전에 만들어 두는 복사본. 이 파일이 있으면 compact 가 끝나지 않은 것이다.
         self.compact_backup_path: Path = self.data_dir / (self.IDX_NAME + ".compact-backup")
         self.compact_tmp_log_path: Path = self.log_path.with_suffix(".jsonl.tmp")
+        # import 가 위치 슬롯 묶음을 쓰기 전의 위치 파일 크기를 적어 두는 파일. 있으면 import 가 끝나지 않은 것이다.
+        self.import_journal_path: Path = self.data_dir / (self.IDX_NAME + ".import-pending")
         #: 이번 실행에서 자동으로 바로잡은 일(사용자에게 [안내] 로 알린다).
         self.recovered: list[str] = []
 
@@ -365,8 +367,9 @@ class TransactionRepository:
             self.log_path.touch()
         self._recover_interrupted_compact()  # 위치 인덱스를 통째로 되돌릴 수 있으므로 가장 먼저
         self.index.ensure()
+        self._recover_interrupted_import()  # 조각 정리보다 먼저: import 의 조각은 묶음째 잘라 낸다
         if self.index.drop_partial_slot():
-            self.recovered.append("끝나지 않은 마지막 저장(add/import)의 조각을 정리했습니다. 그 거래는 저장되지 않았습니다.")
+            self.recovered.append("끝나지 않은 마지막 저장(add)의 조각을 정리했습니다. 그 거래는 저장되지 않았습니다.")
         # 날짜 인덱스가 없거나 손상됐으면(예: 이 인덱스가 생기기 전의 데이터) 원본에서 자동 재생성한다.
         if not self.date_index.is_valid():
             self.rebuild_date_index()
@@ -465,11 +468,51 @@ class TransactionRepository:
         # append_transaction() 과 같은 이유로 날짜 항목을 슬롯보다 먼저 쓴다. 슬롯 묶음을 쓰기 전에
         # 꺼지면 import 한 거래 전체가 슬롯 범위 밖이 되어, 반쯤 보이는 상태 없이 통째로 없던 일이 된다.
         self.date_index.merge_keys(keys)
+        # 슬롯 묶음은 크기가 커서 쓰는 도중 꺼지면 앞쪽 슬롯만 남아 일부 행만 들어간 상태가 될 수 있다.
+        # 그래서 쓰기 전 크기를 기록해 두고, 다 쓴 뒤 그 기록을 지우는 순간을 import 완료로 삼는다.
+        # 기록이 남아 있으면 다음 실행 때 _recover_interrupted_import() 가 그 크기로 잘라 import 전체를 취소한다.
+        self._write_import_journal(self.index.size())
         with self.idx_path.open("ab") as idx:
             idx.write(slots)
             idx.flush()
             os.fsync(idx.fileno())
+        self._commit_import()
         return count
+
+    def _write_import_journal(self, idx_size: int) -> None:
+        """import 전 위치 파일 크기를 기록한다. 임시 이름으로 쓰고 바꿔서, 기록 파일은 없거나 완전하다."""
+        tmp = self.import_journal_path.with_name(self.import_journal_path.name + ".tmp")
+        with tmp.open("w", encoding="utf-8") as fp:
+            fp.write(str(idx_size))
+            fp.flush()
+            os.fsync(fp.fileno())
+        os.replace(tmp, self.import_journal_path)
+        _fsync_dir(self.data_dir)  # 기록이 확정된 뒤에 슬롯을 써야 꺼져도 되돌릴 근거가 남는다
+
+    def _commit_import(self) -> None:
+        """기록을 지워 import 를 완료한다(이 순간 이후로는 되돌리지 않는다)."""
+        self.import_journal_path.unlink()
+        _fsync_dir(self.data_dir)
+
+    def _recover_interrupted_import(self) -> None:
+        """끝나지 않은 import 가 쓴 슬롯을 기록된 크기로 잘라 그 import 전체를 취소한다.
+
+        슬롯을 다 썼지만 기록을 지우기 전에 꺼진 경우도 취소한다(완료 시점은 기록 삭제). 남는 jsonl 줄과
+        날짜 항목은 슬롯 범위 밖이라 읽을 때 건너뛰고 compact 때 정리되며, 카테고리 건수는 많게만 틀린다.
+        """
+        tmp = self.import_journal_path.with_name(self.import_journal_path.name + ".tmp")
+        tmp.unlink(missing_ok=True)  # 기록을 만드는 중에 멈춤. 슬롯은 아직 쓰지 않았다
+        if not self.import_journal_path.exists():
+            return
+        idx_size = int(self.import_journal_path.read_text(encoding="utf-8"))
+        if self.index.size() > idx_size:
+            with self.idx_path.open("r+b") as fp:
+                fp.truncate(idx_size)
+                fp.flush()
+                os.fsync(fp.fileno())
+        self.import_journal_path.unlink()
+        _fsync_dir(self.data_dir)
+        self.recovered.append("지난 import 가 끝나지 않아 그 import 전체를 취소했습니다. 같은 CSV 를 다시 가져오세요.")
 
     def update_transaction(self, tx: Transaction) -> Transaction:
         """수정된 전체 레코드를 끝에 append 하고 해당 id 슬롯만 덮어쓴다."""
