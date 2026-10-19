@@ -21,6 +21,7 @@ from .models import (
     StorageError,
     ValidationError,
 )
+from .repository import _fsync_dir
 
 
 class JsonlStore:
@@ -61,6 +62,9 @@ class JsonlStore:
             fp.flush()
             os.fsync(fp.fileno())
         os.replace(tmp_path, self.path)
+        # 교체를 폴더까지 확정한다. 안 하면 전원이 꺼졌을 때 교체가 되돌아갈 수 있는데, 그러면 카테고리
+        # 사용 건수를 거래보다 먼저 늘린 순서가 뒤집혀 건수가 실제보다 적어질 수 있다(사용 중인 카테고리 삭제 위험).
+        _fsync_dir(self.path.parent)
 
 
 class CategoryStore(JsonlStore):

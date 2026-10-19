@@ -291,6 +291,9 @@ class DateIndex:
             dst.flush()
             os.fsync(dst.fileno())
         os.replace(tmp_path, self.path)
+        # 교체를 확정하지 않으면, 이 뒤에 위치 슬롯을 확정한 다음 전원이 꺼졌을 때 교체가 되돌아가
+        # 저장된 거래의 날짜 항목이 없어진다(목록·요약에서 빠짐). 쓰기 순서를 지키려면 여기서 확정해야 한다.
+        _fsync_dir(self.path.parent)
 
     @staticmethod
     def _write_keys(fp: BinaryIO, keys: Iterable[int]) -> None:
@@ -313,6 +316,7 @@ class DateIndex:
             fp.flush()
             os.fsync(fp.fileno())
         os.replace(tmp_path, self.path)
+        _fsync_dir(self.path.parent)  # merge() 와 같은 이유로 교체를 확정한다
 
 
 @dataclass(slots=True)
