@@ -98,19 +98,22 @@ class TransactionService:
                 'category add 로 먼저 등록하세요. 예: python -m budget_app category add --name "식비"',
             )
 
-    def validate_category(self, value: str) -> str:
-        """등록된 카테고리인지 확인한다(자동 생성하지 않음)."""
+    def validate_category(self, value: str, known: set[str] | None = None) -> str:
+        """등록된 카테고리인지 확인한다(자동 생성하지 않음).
+
+        `known` 을 주면 파일을 다시 읽지 않고 그 집합으로 확인한다(import 처럼 행이 많을 때).
+        """
         name = (value or "").strip()
         if not name:
             raise ValidationError(
                 "카테고리를 입력해야 합니다.",
                 "category list 로 등록된 카테고리를 확인하세요.",
             )
-        if not self.categories.exists(name):
-            known = ", ".join(self.categories.names()) or "(없음)"
+        if name not in (known if known is not None else set(self.categories.names())):
+            registered = ", ".join(self.categories.names()) or "(없음)"
             raise ValidationError(
                 f"등록되지 않은 카테고리입니다: '{name}'",
-                f"등록된 카테고리: {known} / 새로 만들려면 category add 를 사용하세요.",
+                f"등록된 카테고리: {registered} / 새로 만들려면 category add 를 사용하세요.",
             )
         return name
 
@@ -122,15 +125,21 @@ class TransactionService:
         amount: str | int,
         memo: str = "",
         tags: str | list[str] | None = None,
+        known_categories: set[str] | None = None,
     ) -> Transaction:
-        """원시 입력값을 검증해 (id 미부여) Transaction 으로 만든다."""
-        self.ensure_categories_exist()
+        """원시 입력값을 검증해 (id 미부여) Transaction 으로 만든다.
+
+        `known_categories` 를 주면 호출자가 카테고리 존재 여부를 이미 확인했다고 보고,
+        categories.jsonl 을 행마다 다시 읽지 않는다.
+        """
+        if known_categories is None:
+            self.ensure_categories_exist()
         tag_list = parse_tags(tags if tags is None or isinstance(tags, str) else format_tags(tags))
         return Transaction(
             id=0,
             date=validate_date(date),
             type=validate_type(type_),
-            category=self.validate_category(category),
+            category=self.validate_category(category, known_categories),
             amount=validate_amount(amount),
             memo=(memo or "").strip(),
             tags=tag_list,

@@ -40,6 +40,8 @@ class CsvService:
                 "--from 경로를 확인하세요.",
             )
         self.service.ensure_categories_exist()
+        # 행마다 categories.jsonl 을 열지 않도록 한 번만 읽어 둔다(10만 행이면 20만 번 열던 병목).
+        known = set(self.service.categories.names())
         skipped = 0
         errors: list[tuple[int, str]] = []
         valid: list[Transaction] = []
@@ -60,6 +62,7 @@ class CsvService:
                         amount=row.get("amount", ""),
                         memo=row.get("memo", "") or "",
                         tags=row.get("tags", "") or "",
+                        known_categories=known,
                     )
                 except ValidationError as exc:
                     skipped += 1
