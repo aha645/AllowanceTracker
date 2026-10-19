@@ -179,7 +179,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
         """tests/data 를 비운다(수동 초기화). 다른 테스트는 데이터를 지우지 않는다."""
         shutil.rmtree(self.data_dir, ignore_errors=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        type(self).ids = {}
+        self.ids.clear()
         self.assertEqual(list(self.data_dir.iterdir()), [])
 
     # ==================================================================
