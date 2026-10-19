@@ -111,6 +111,13 @@ class RequirementChecklistTestCase(unittest.TestCase):
             self.fail(f"'{key}' 의 id 를 알 수 없습니다. 앞 단계(add)를 먼저 실행하세요.")
         return self.ids[key]
 
+    def _group(self, pattern: str, text: str, flags: int = 0) -> str:
+        """정규식의 첫 번째 그룹을 돌려준다. 못 찾으면 출력과 함께 테스트를 실패시킨다."""
+        found = re.search(pattern, text, flags)
+        if found is None:
+            self.fail(f"출력에서 {pattern!r} 를 찾지 못했습니다:\n{text}")
+        return found.group(1)
+
     def run_cli(self, *argv: str) -> tuple[int, str, str]:
         """CLI 를 실행하고 (종료 코드, stdout, stderr) 를 돌려준다(콘솔에도 그대로 보여준다)."""
         console = sys.stdout
@@ -541,7 +548,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
         )
         self.assertEqual(code, 0)
         self.assertIn("[저장 완료]", out)
-        self.ids["rule"] = re.search(r"id=(RC-\d+)", out).group(1)
+        self.ids["rule"] = self._group(r"id=(RC-\d+)", out)
         self.assertIn(self._id("rule"), self.run_cli("recurring", "list")[1])
 
         code, out, _ = self.run_cli("recurring", "apply", "--month", "2024-02")
@@ -565,7 +572,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(self.run_cli("import", "--from", str(source))[0], 0)
         self._add("mid", "2024-01-20", "expense", "식비", "3000", "날짜인덱스_중간")
         _, out, _ = self.run_cli("search", "--q", "날짜인덱스_옛거래")
-        old = re.search(r"^\s*\d+\s+(TX-\d+)\s", out, re.M).group(1)
+        old = self._group(r"^\s*\d+\s+(TX-\d+)\s", out, re.M)
         self.ids["old"] = old
 
         order = self._listed_ids()

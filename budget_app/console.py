@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import sys
-from typing import Callable, Iterable
+from typing import Callable, Iterable, TypeVar
 
 from .context import AppContext
 from .formatter import format_amount, format_bar, format_table
 from .models import TYPE_INCOME, Transaction, ValidationError
 from .services import BudgetUsage
 from .validators import format_tags
+
+T = TypeVar("T")
 
 LIST_HEADERS = ["#", "id", "날짜", "타입", "카테고리", "금액", "메모", "태그"]
 LIST_ALIGNS = ["right", "left", "left", "left", "left", "right", "left", "left"]
@@ -50,15 +52,19 @@ def parse_rule_id(value: str) -> int:
 
 def prompt_until_valid(
     label: str,
-    validator: Callable[[str], object],
+    validator: Callable[[str], T],
     *,
-    default: object | None = None,
+    default: T | None = None,
     allow_blank: bool = False,
-) -> object:
-    """검증을 통과할 때까지 재입력을 요구하는 대화형 입력 루프."""
+) -> T:
+    """검증을 통과할 때까지 재입력을 요구하는 대화형 입력 루프.
+
+    validator 가 돌려주는 타입을 그대로 돌려준다(validate_amount 면 int). 빈 입력은
+    allow_blank 이고 default 가 있을 때만 default 로 받는다.
+    """
     while True:
         raw = input(label)
-        if not raw.strip() and allow_blank:
+        if not raw.strip() and allow_blank and default is not None:
             return default
         try:
             return validator(raw)

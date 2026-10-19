@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import datetime
-from typing import Callable
+from typing import Callable, TypeVar
 
 from ..console import (
     maybe_hint_compact,
@@ -32,6 +32,8 @@ from ..validators import (
     validate_month,
     validate_type,
 )
+
+T = TypeVar("T")
 
 
 def build_criteria(ctx: AppContext, args: argparse.Namespace) -> SearchCriteria:
@@ -92,10 +94,10 @@ def _prompt_transaction(ctx: AppContext) -> Transaction:
     tags = parse_tags(input("태그 (선택, 쉼표 구분): "))
     return Transaction(
         id=0,
-        date=str(date),
-        type=str(type_),
-        category=str(category),
-        amount=int(amount),  # type: ignore[arg-type]
+        date=date,
+        type=type_,
+        category=category,
+        amount=amount,
         memo=memo,
         tags=tags,
     )
@@ -175,13 +177,17 @@ def cmd_search(ctx: AppContext, args: argparse.Namespace) -> int:
 CLEAR_TOKEN = "-"  # update 대화형에서 메모/태그를 비울 때 입력하는 값
 
 
-def _clearable(validator: Callable[[str], object]) -> Callable[[str], object]:
+def _clearable(validator: Callable[[str], str]) -> Callable[[str], str]:
     """`-` 입력은 "비우기"(빈 문자열)로 취급하는 검증기를 만든다."""
 
-    def wrapper(raw: str) -> object:
+    def wrapper(raw: str) -> str:
         return "" if raw.strip() == CLEAR_TOKEN else validator(raw)
 
     return wrapper
+
+
+def _if_changed(new: T, old: T) -> T | None:
+    return None if new == old else new
 
 
 @command
@@ -219,28 +225,23 @@ def cmd_update(ctx: AppContext, args: argparse.Namespace) -> int:
         allow_blank=True,
     )
 
-    changes = {
-        "date": date,
-        "type_": type_,
-        "category": category,
-        "amount": amount,
-        "memo": memo,
-        "tags": tags,
-    }
-    current_values = {
-        "date": current.date,
-        "type_": current.type,
-        "category": current.category,
-        "amount": current.amount,
-        "memo": current.memo,
-        "tags": format_tags(current.tags),
-    }
-    changed = {k: v for k, v in changes.items() if v != current_values[k]}
-    if not changed:
+    current_tags = format_tags(current.tags)
+    if (date, type_, category, amount, memo, tags) == (
+        current.date, current.type, current.category, current.amount, current.memo, current_tags
+    ):
         print("[안내] 값이 기존과 동일하여 변경된 필드가 없습니다.")
         return EXIT_OK
 
-    before, after = ctx.transactions.update(tx_id, **changed)
+    # 바뀐 필드만 넘긴다(None = 그대로 둠). 키워드로 하나씩 넘겨야 필드별 타입이 검사된다.
+    before, after = ctx.transactions.update(
+        tx_id,
+        date=_if_changed(date, current.date),
+        type_=_if_changed(type_, current.type),
+        category=_if_changed(category, current.category),
+        amount=_if_changed(amount, current.amount),
+        memo=_if_changed(memo, current.memo),
+        tags=_if_changed(tags, current_tags),
+    )
     print(f"[수정 완료] id={after.display_id}")
     rows = [
         [field, str(getattr(before, field)), str(getattr(after, field))]
