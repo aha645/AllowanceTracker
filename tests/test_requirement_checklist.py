@@ -384,6 +384,25 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertIn("총 수입  3,000,000원", out)
         self.assertIn("총 지출  8,000원", out)
 
+        # 파일 자체를 못 읽으면(뒤쪽에 UTF-8 이 아닌 바이트 / 닫히지 않은 따옴표) 앞쪽 정상 행도 저장하지 않는다
+        valid_rows = "".join(f"2024-02-{d:02d},expense,식비,1000,,\n" for d in range(1, 29)) * 20
+        broken = self.data_dir / "broken.csv"
+        broken.write_bytes(("date,type,category,amount,memo,tags\n" + valid_rows).encode("utf-8") + b"\xff\xfe\n")
+        unclosed = self.data_dir / "unclosed.csv"
+        unclosed.write_text(
+            "date,type,category,amount,memo,tags\n" + valid_rows + '2024-02-01,expense,식비,1000,"닫히지 않은 메모'
+            + "x" * 140_000 + "\n",  # csv 모듈의 필드 길이 한도(131072자)를 넘긴다
+            encoding="utf-8",
+        )
+        for path in (broken, unclosed):
+            code, _, err = self.run_cli("import", "--from", str(path))
+            self.assertEqual(code, 1)
+            self.assertIn("[오류]", err)
+            self.assertIn("[힌트]", err)
+            self.assertNotIn("Traceback", err)
+        _, out, _ = self.run_cli("summary", "--month", "2024-02")
+        self.assertIn("총 지출  8,000원", out)  # 그대로
+
     def test_095_export(self) -> None:
         target = self.data_dir / "export_2024_02.csv"
         code, out, _ = self.run_cli("export", "--out", str(target), "--month", "2024-02")

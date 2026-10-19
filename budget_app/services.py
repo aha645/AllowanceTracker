@@ -149,8 +149,8 @@ class TransactionService:
     def add(self, tx: Transaction) -> Transaction:
         return self.repo.append_transaction(tx)
 
-    def add_many(self, transactions: Iterable[Transaction]) -> list[Transaction]:
-        """여러 거래를 한 번에 저장한다(import 용: 날짜 인덱스를 한 번만 병합)."""
+    def add_many(self, transactions: Iterable[Transaction]) -> int:
+        """여러 거래를 한 번에 저장하고 건수를 돌려준다(import 용: 날짜 인덱스를 한 번만 병합)."""
         return self.repo.append_transactions(transactions)
 
     def update(

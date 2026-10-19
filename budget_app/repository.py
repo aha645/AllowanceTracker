@@ -337,38 +337,39 @@ class TransactionRepository:
         self.date_index.merge([(date_ordinal(stored.date), stored.id)])
         return stored
 
-    def append_transactions(self, transactions: Iterable[Transaction]) -> list[Transaction]:
-        """여러 거래를 한 번에 저장한다(import 용).
+    def append_transactions(self, transactions: Iterable[Transaction]) -> int:
+        """여러 거래를 한 번에 저장하고 저장한 건수를 돌려준다(import 용).
 
         로그 레코드와 인덱스 슬롯은 각각 한 번에 이어 쓰고(fsync 도 파일당 한 번), 날짜 인덱스는 모아서
         한 번에 병합한다. 옛 날짜가 섞여 있어도 행마다 파일을 다시 쓰지 않는다.
+        거래 객체는 쓰고 나면 버리므로(제너레이터를 넘기면) 메모리가 건수만큼 늘지 않는다.
         """
         self.ensure_files()
         next_id = self.index.next_id()
-        saved: list[Transaction] = []
+        count = 0
         slots: list[bytes] = []
         entries: list[DateEntry] = []
         with self.log_path.open("ab") as log:
             log.seek(0, os.SEEK_END)
             offset = log.tell()
             for tx in transactions:
-                stored = tx.replace_fields(id=next_id + len(saved))
+                stored = tx.replace_fields(id=next_id + count)
                 payload = stored.to_json().encode("utf-8")
                 log.write(payload + b"\n")
                 slots.append(SLOT_STRUCT.pack(offset, offset + len(payload)))
                 offset += len(payload) + 1
-                saved.append(stored)
+                count += 1
                 entries.append((date_ordinal(stored.date), stored.id))
             log.flush()
             os.fsync(log.fileno())
-        if not saved:
-            return saved
+        if not count:
+            return 0
         with self.idx_path.open("ab") as idx:
             idx.write(b"".join(slots))
             idx.flush()
             os.fsync(idx.fileno())
         self.date_index.merge(entries)
-        return saved
+        return count
 
     def update_transaction(self, tx: Transaction) -> Transaction:
         """수정된 전체 레코드를 끝에 append 하고 해당 id 슬롯만 덮어쓴다."""
