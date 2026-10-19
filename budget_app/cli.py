@@ -71,7 +71,7 @@ def _require_subcommand(name: str, choices: str) -> Callable[[AppContext, argpar
     return handler
 
 
-def _add_transaction_parsers(sub: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
+def _add_transaction_parsers(sub: argparse._SubParsersAction[HintArgumentParser]) -> None:
     p_add = sub.add_parser("add", help="거래 추가 (옵션 없이 실행하면 대화형)")
     p_add.add_argument("--date", metavar="YYYY-MM-DD", help="거래 날짜")
     p_add.add_argument("--type", choices=TRANSACTION_TYPES, help="거래 타입")
@@ -100,7 +100,7 @@ def _add_transaction_parsers(sub: "argparse._SubParsersAction[argparse.ArgumentP
     p_delete.set_defaults(func=cmd_delete)
 
 
-def _add_report_parsers(sub: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
+def _add_report_parsers(sub: argparse._SubParsersAction[HintArgumentParser]) -> None:
     p_summary = sub.add_parser("summary", help="월별 요약 + 예산 사용률")
     p_summary.add_argument("--month", required=True, metavar="YYYY-MM", help="요약할 달")
     p_summary.add_argument("--top", type=int, default=DEFAULT_TOP,
@@ -127,7 +127,7 @@ def _add_report_parsers(sub: "argparse._SubParsersAction[argparse.ArgumentParser
     b_remove.set_defaults(func=cmd_budget_remove)
 
 
-def _add_category_parsers(sub: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
+def _add_category_parsers(sub: argparse._SubParsersAction[HintArgumentParser]) -> None:
     p_cat = sub.add_parser("category", help="카테고리 관리")
     cat_sub = p_cat.add_subparsers(dest="category_command", metavar="<add|list|remove>")
     p_cat.set_defaults(func=_require_subcommand("category", "add | list | remove"))
@@ -143,7 +143,7 @@ def _add_category_parsers(sub: "argparse._SubParsersAction[argparse.ArgumentPars
     c_remove.set_defaults(func=cmd_category_remove)
 
 
-def _add_data_parsers(sub: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
+def _add_data_parsers(sub: argparse._SubParsersAction[HintArgumentParser]) -> None:
     p_import = sub.add_parser("import", help="CSV 가져오기")
     p_import.add_argument("--from", dest="source", required=True, metavar="PATH", help="CSV 파일 경로")
     p_import.set_defaults(func=cmd_import)
@@ -157,7 +157,7 @@ def _add_data_parsers(sub: "argparse._SubParsersAction[argparse.ArgumentParser]"
     sub.add_parser("backup", help="데이터 파일 타임스탬프 백업").set_defaults(func=cmd_backup)
 
 
-def _add_recurring_parsers(sub: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
+def _add_recurring_parsers(sub: argparse._SubParsersAction[HintArgumentParser]) -> None:
     p_rec = sub.add_parser("recurring", help="반복 거래 규칙 관리")
     rec_sub = p_rec.add_subparsers(dest="recurring_command", metavar="<add|list|remove|apply>")
     p_rec.set_defaults(func=_require_subcommand("recurring", "add | list | remove | apply"))
@@ -182,7 +182,7 @@ def _add_recurring_parsers(sub: "argparse._SubParsersAction[argparse.ArgumentPar
     r_apply.set_defaults(func=cmd_recurring_apply)
 
 
-class FriendlyParser(argparse.ArgumentParser):
+class HintArgumentParser(argparse.ArgumentParser):
     """argparse 의 사용법 오류도 `[오류]`/`[힌트]` 형식으로 출력한다(종료 코드 2 유지).
 
     서브커맨드 파서도 부모와 같은 클래스로 만들어지므로 모든 커맨드에 적용된다.
@@ -195,7 +195,7 @@ class FriendlyParser(argparse.ArgumentParser):
 
 def build_parser() -> argparse.ArgumentParser:
     """서브커맨드 전체를 정의한 argparse 파서를 만든다."""
-    parser = FriendlyParser(
+    parser = HintArgumentParser(
         prog="python -m budget_app",
         description="콘솔 가계부 — 거래 기록/검색/월별 요약/예산 관리",
         formatter_class=argparse.RawDescriptionHelpFormatter,
