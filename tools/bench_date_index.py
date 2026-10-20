@@ -30,6 +30,7 @@ from budget_app.bplustree import DateIndex
 from budget_app.models import Transaction
 from budget_app.repository import TransactionRepository
 
+# 태그 sorted-array-baseline 이 가리키는 커밋. 태그를 받지 않은 클론에서도 동작하도록 해시로 고정한다.
 BASE_COMMIT = "4713a5bc9406816477d8ffd4b2e0e0fb498b91aa"
 
 

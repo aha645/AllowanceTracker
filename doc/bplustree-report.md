@@ -1,6 +1,6 @@
 # B+Tree 날짜 인덱스 구현 및 검증 보고서
 
-작성일: 2026-10-20. 기준 커밋: `4713a5bc9406816477d8ffd4b2e0e0fb498b91aa`.
+작성일: 2026-10-20. 기준 커밋: `4713a5bc9406816477d8ffd4b2e0e0fb498b91aa` (태그 `sorted-array-baseline`).
 작업 브랜치: `feat/bplustree-date-index`.
 
 ## 1. 변경 파일 및 기존 동작 유지
@@ -10,14 +10,14 @@
 | `budget_app/bplustree.py` | 직접 구현한 디스크 B+Tree, 바이너리 페이지, 분할, 순위·범위·양방향 스캔, CRC32, redo WAL, 구조 검사 |
 | `budget_app/durability.py` | durable 원자 파일 저장, 거래번호 슬롯 undo 기록 및 재시작 복구 |
 | `budget_app/repository.py` | DateIndex 교체·재노출, 키 경계 조회, 64-bit id 보존, legacy 백업·자동 마이그레이션, 슬롯 undo 통합 |
-| `tests/test_bplustree.py` | 독립 정렬 oracle, 10만 번 개별 삽입, 기본/작은 페이지 분할, WAL·root·페이지 손상, 프로세스 강제 종료 및 재복구 |
-| `tests/test_bplustree_repository.py` | 10만 거래, 수정·삭제·compact, CSV·recurring·backup, 기존 파일 마이그레이션, 파일 간 일관성·슬롯 장애 복구 |
+| `tests/test_bplustree.py` | 독립 정렬 oracle, 일괄 생성·끝에 붙인 키 분할, 묶음 확정, 10만 번 개별 삽입(선택 실행), 기본/작은 페이지 분할, WAL·root·페이지 손상, 프로세스 강제 종료 및 재복구 |
+| `tests/test_bplustree_repository.py` | 10만 거래, 수정·삭제·compact, CSV·recurring·backup, 기존 파일 마이그레이션, 파일 간 일관성·슬롯 장애 복구, 큰 import 의 재생성 중단 |
 | `tests/test_requirement_checklist.py` | 기존 17개 시나리오 유지. 150번의 배열 크기·손상 바이트 위치만 페이지 형식에 맞게 변경 |
 | `tools/bench_date_index.py` | 원본 커밋의 실제 Sorted Array 구현과 동일 입력·실제 fsync 비교 |
-| `tools/bench_large.py` | 과거 날짜 삽입의 측정 이름을 현재 B+Tree 동작으로 정정 |
+| `tools/bench_large.py` | `--app-dir` 로 다른 폴더(예: worktree 로 꺼낸 기준 태그)의 CLI 를 같은 조건으로 측정 |
 | `doc/bplustree-design.md` | 구현 전 전체 소스 분석 및 호환성·복구 설계 결정 |
 | `doc/bplustree-benchmark.json` | 성능 원시 결과, 환경·표본 수·최솟값·중앙값·최댓값 |
-| `README.md` | 현재 포맷·마이그레이션·커밋 규칙 안내. 기존 성능·복구 기록은 과거 버전임을 표시 |
+| `README.md` | 현재 포맷·마이그레이션 안내. 5부(대용량 측정)는 두 버전 비교로, 6부(전원 차단 복구)는 현재 쓰기 순서로 다시 씀 |
 | `doc/bplustree-report.md` | 이 보고서 |
 
 SQLite나 외부 DB·패키지를 사용하지 않는다. 기존 CLI, CSV 스키마와 검증/skip 정책, 카테고리·예산·반복 규칙 기능을 유지한다. `transactions.jsonl`은 append-only이며 수정도 끝에 추가한다. `transactions.idx`는 기존 `<QQ` 16바이트 구조이고 id `N`의 슬롯은 `(N-1)*16`이다. 삭제 슬롯과 최대 발급 id를 compact·마이그레이션에서도 보존한다.
@@ -196,13 +196,14 @@ Internal 본문은 첫 자식의 `<QQ` (page id, 키 수) 16바이트 뒤에 `<I
 
 1. root부터 internal 분기 키를 이진 탐색해 목표 leaf를 찾는다. 같은 키는 중복 추가하지 않는다.
 2. leaf의 정렬된 위치에 삽입한다. 부모 경로의 자식 키 수를 갱신한다.
-3. leaf가 339개 키가 되면 169개/170개로 나누고 새 오른쪽 leaf의 최소 키를 부모에 복사한다. 새 leaf의 prev/next, 기존 leaf의 next, 기존 오른쪽 이웃의 prev를 함께 변경한다. 마지막 leaf가 바뀌면 메타데이터도 갱신한다.
-4. internal이 145개 키가 되면 가운데 키를 부모로 승격하고 좌우에 72개 키/73개 자식을 둔다. 부모가 넘치면 같은 과정을 위로 반복한다.
+3. leaf가 339개 키가 되면 나눈다. 새 키가 leaf의 **맨 끝**에 들어가서 넘쳤으면 왼쪽 338개를 그대로 두고 새 키 하나만 새 오른쪽 leaf로 옮긴다. 날짜순 add나 정렬한 import는 늘 맨 끝에 붙으므로, 반반으로 나누면 왼쪽 절반이 다시 채워지지 않아 leaf가 평균 절반만 찬다. 그 밖의 경우는 169개/170개로 나눈다. 새 오른쪽 leaf의 최소 키를 부모에 복사한다. 새 leaf의 prev/next, 기존 leaf의 next, 기존 오른쪽 이웃의 prev를 함께 변경한다. 마지막 leaf가 바뀌면 메타데이터도 갱신한다.
+4. internal이 145개 키가 되면 가운데 키를 부모로 승격하고 좌우에 72개 키/73개 자식을 둔다. 맨 오른쪽 자식이 나뉘어 넘친 경우에는 leaf와 같은 이유로 끝에서 두 번째 키를 승격해 왼쪽에 143개 키, 오른쪽에 키 1개·자식 2개를 둔다(분기 키 0개인 internal은 만들지 않는다). 부모가 넘치면 같은 과정을 위로 반복한다.
 5. 기존 root가 분할되면 자식 2개를 갖는 새 internal root를 만들고 page 0의 root id를 바꾼다. 이 변경 전부가 하나의 WAL에 포함된다.
+6. **일괄 생성**(`rebuild`, compact·재생성·큰 import에서 사용): 키를 하나씩 삽입하지 않는다. 오름차순 키로 leaf를 왼쪽부터 338개씩 꽉 채워 page 1부터 차례로 쓰고, 각 leaf의 (첫 키, 페이지 번호, 키 수)로 그 위층 internal을 자식 145개씩 만든다. root 하나가 남을 때까지 반복한다. 마지막 묶음에 자식이 하나뿐이면 앞 묶음에서 하나 가져온다. 정렬되지 않은 키는 거부한다(같은 키는 한 번만 둔다). 넣을 건수가 기존 키 이상인 import는 기존 키와 새 키를 `heapq.merge`로 합쳐 일괄 생성한다(`rebuild_merged`).
 
 `iter_range(lower, upper, reverse=...)`는 `[lower, upper)` 범위를 한 번 내려가 찾은 leaf부터 연결 목록으로 읽는다. 저장소의 포함 종료 날짜는 `(종료일 ordinal + 1, 0)`으로 바꾸므로 날짜 `9999-12-31`도 넘치는 date 객체 없이 처리한다. 역순은 prev 링크를 이용한다. 키 기준 삽입/검색은 O(log N), K개 키 범위 조회는 O(log N + K)를 목표로 하며, 페이지 크기를 고정한 구현이다.
 
-일반 단건 작업의 clean cache는 최대 64페이지이고, 바뀐 경로와 분할 이웃만 보관·기록한다. 범위 조회는 전체 인덱스를 메모리에 올리지 않는다. bulk import/rebuild는 한 번의 작업에서 변경한 페이지와 입력 키를 모으므로 **배치 크기에 비례하는 메모리**를 사용한다. 무제한 크기 배치의 외부 정렬/상수 메모리 빌더를 구현한 것은 아니다.
+일반 단건 작업의 clean cache는 최대 64페이지이고, 바뀐 경로와 분할 이웃만 보관·기록한다. 범위 조회는 전체 인덱스를 메모리에 올리지 않는다. 여러 키를 넣는 `merge`는 바뀐 페이지가 256개(`MAX_DIRTY_PAGES`)를 넘으면 그때까지를 WAL 하나로 먼저 확정하므로 변경 페이지 메모리가 배치 크기와 무관하다(삽입 한 번이 바꾸는 페이지 수, 즉 2×높이+3개만큼은 넘을 수 있다). 묶음별로 확정하므로 날짜 인덱스의 원자성은 묶음 단위다. 거래의 존재는 슬롯과 import 기록이 정하므로 일부 묶음만 남아도 안전하다(상한을 4페이지로 낮춰 2,551번 강제 종료해 매번 트리가 온전함을 확인). 입력 키는 import·재생성 모두 건당 12바이트 배열(날짜 4 + id 8)에 모아 날짜별로 나눠 정렬하므로 이 부분은 배치 크기에 비례한다(100만 건 약 20MB). 디스크 외부 정렬은 구현하지 않았다.
 
 ## 4. 장애 복구와 파일 간 일관성
 
@@ -274,54 +275,86 @@ JSONL 기록 후 날짜 인덱스 실패 시 슬롯은 아직 바꾸지 않아 �
 
 ## 5. 성능 비교
 
-원본 구현을 기준 커밋에서 `git show`로 읽어 별도 모듈로 실행했다. 새로운 코드로 정렬 배열을 흉내 낸 결과가 아니다. 고정 seed 645, 2020~2024 날짜 분포, 동일 파일시스템·프로세스에서 실제 파일에 기록하고 fsync를 생략하거나 mock하지 않았다. 각 단건 작업 15회 중앙값이며 Python 시작·CLI 표 출력은 제외한다. 범위 조회는 결과를 전부 소비·검증한다. 캐시를 강제로 비우지 않았으므로 디스크 하드웨어 일반 성능으로 해석하면 안 된다.
+두 가지로 쟀다. 기준(Sorted Array)은 태그 `sorted-array-baseline`(커밋 `4713a5b`)의 원본 코드이고, 새로 흉내 낸 구현이 아니다. 같은 컴퓨터(macOS, Python 3.10.22)에서 같은 날 연달아 측정했다.
 
-### 10만 건: 저장소 전체 연산
+### 측정 방법
+
+**함수 단위** (`tools/bench_date_index.py`): 원본 `repository.py`를 `git show 4713a5b:budget_app/repository.py`로 읽어 별도 모듈로 실행하고, 현재 구현과 한 프로세스 안에서 함께 잰다. 고정 seed 645, 2020~2024 날짜 분포, 실제 파일에 기록하고 fsync를 생략하거나 mock하지 않았다. 각 단건 작업 15회 중앙값이며 Python 시작·CLI 표 출력은 제외한다. 범위 조회는 결과를 전부 소비·검증한다. 캐시를 강제로 비우지 않았으므로 디스크 하드웨어 일반 성능으로 해석하면 안 된다.
+
+**명령 단위** (`tools/bench_large.py`): 기준 태그를 git worktree로 옆 폴더에 꺼내고, 같은 스크립트·같은 CSV(seed 42)로 두 폴더의 CLI를 번갈아 실행한다. 명령마다 새 프로세스라 Python 시작 비용이 포함된다.
+
+```bash
+git worktree add ../AllowanceTracker-sorted sorted-array-baseline
+python tools/bench_large.py --n 1000000                                       # 현재
+python tools/bench_large.py --n 1000000 --app-dir ../AllowanceTracker-sorted  # 기준
+git worktree remove ../AllowanceTracker-sorted
+```
+
+### 10만 건: 저장소 전체 연산 (함수 단위)
 
 JSONL·거래번호 인덱스와 새 슬롯 undo 비용을 모두 포함한다. 날짜 범위는 2022-06-10~12, 결과 158건이다.
 
 | 연산 | Sorted Array | B+Tree | 해석 |
 |---|---:|---:|---|
-| 최신 날짜 거래 추가 | 1.150ms | 4.074ms | 약 3.54배 느림: 배열 append에 비해 WAL·슬롯 undo fsync 비용 추가 |
-| 과거 날짜 거래 삽입 | 22.711ms | 3.984ms | 약 5.70배 빠름 |
-| 기존 거래 날짜 수정 | 21.947ms | 4.014ms | 약 5.47배 빠름 |
-| 날짜 범위 조회 | 1.441ms | 1.297ms | 약 1.11배 빠름 |
-| 10만 거래 일괄 저장 | 0.882s | 1.155s | 약 1.31배 느림 |
-| 날짜 인덱스 크기 (작업 후) | 1,200,540B | 1,851,392B | 페이지 여유 공간·분기·체크섬 비용 |
+| 최신 날짜 거래 추가 | 0.630ms | 2.195ms | 약 3.5배 느림: 배열 append에 비해 WAL·슬롯 undo fsync 비용 추가 |
+| 과거 날짜 거래 삽입 | 36.886ms | 2.211ms | 약 16.7배 빠름 |
+| 기존 거래 날짜 수정 | 36.997ms | 2.286ms | 약 16.2배 빠름 |
+| 날짜 범위 조회 | 2.663ms | 2.467ms | 약 1.08배 빠름 |
+| 10만 거래 일괄 저장 | 1.976s | 1.980s | 같음 (일괄 생성 사용) |
+| 날짜 인덱스 크기 (작업 후) | 1,200,540B | 1,241,088B | +3%: 페이지 머리말·분기·체크섬 |
 
-### 날짜 인덱스만 비교
+### 날짜 인덱스만 비교 (함수 단위)
 
 | 데이터 수 / 연산 | Sorted Array | B+Tree |
 |---|---:|---:|
-| 1만 / 과거 삽입 | 2.992ms | 1.864ms |
-| 10만 / 과거 삽입 | 21.186ms | 1.859ms |
-| 10만 / 날짜 변경 키 추가 | 21.285ms | 1.929ms |
-| 10만 / 최신 키 추가 | 0.351ms | 1.975ms |
-| 1만 / 범위 20건 | 0.052ms | 0.143ms |
-| 10만 / 범위 158건 | 0.236ms | 0.146ms |
+| 1만 / 과거 삽입 | 4.110ms | 0.943ms |
+| 10만 / 과거 삽입 | 36.492ms | 1.033ms |
+| 10만 / 날짜 변경 키 추가 | 36.226ms | 1.070ms |
+| 10만 / 최신 키 추가 | 0.321ms | 1.138ms |
+| 1만 / 범위 20건 | 0.163ms | 0.214ms |
+| 10만 / 범위 158건 | 0.611ms | 0.389ms |
 
-과거 삽입은 배열에서 N 증가에 따라 재작성 비용이 증가했고 B+Tree는 경로 페이지 갱신 수준으로 유지됐다. 모든 작업이 빨라지는 것은 아니다. 작은 범위에서는 전체 leaf 디코딩·CRC 검사 비용이 있고, 최신 날짜 단건 추가는 WAL 확정 비용 때문에 느리다. 10만 건 측정 트리는 높이 3, 메타데이터 포함 452페이지였다(인덱스 단독, 측정용 추가 45키 포함).
+과거 삽입은 배열에서 N 증가에 따라 재작성 비용이 증가했고 B+Tree는 경로 페이지 갱신 수준으로 유지됐다. 모든 작업이 빨라지는 것은 아니다. 작은 범위에서는 leaf 디코딩·CRC 검사 비용이 있고, 최신 날짜 단건 추가는 WAL 확정 비용 때문에 느리다.
+
+### 100만 건: 명령 단위
+
+| 명령 | Sorted Array | B+Tree |
+|---|---:|---:|
+| 기준선 (빈 저장소 `category list`) | 0.07s · 14MB | 0.08s · 16MB |
+| `add` 옛 날짜 | 0.43s · 16MB | 0.08s · 16MB |
+| `add` 가장 늦은 날짜 | 0.07s · 14MB | 0.08s · 16MB |
+| `import` (빈 저장소에 100만 건) | 63.99s · 92MB | 64.31s · 59MB |
+| `compact` | 17.77s · 350MB | 16.37s · 47MB |
+| `list --limit 20` | 0.43s · 14MB | 0.40s · 16MB |
+| `search --q 없는말` (전체 훑기) | 16.54s · 14MB | 14.22s · 20MB |
+| `export` 전체 기간 | 20.86s · 14MB | 19.12s · 20MB |
+| `transactions.date.idx` 크기 | 11.4MB | 11.6MB |
+
+함수 단위에서 1.6ms 느린 최신 날짜 추가는 명령 단위에서는 Python 시작 시간(약 0.08s)에 가려 차이가 보이지 않는다. 10만·30만 건 결과와 모든 명령은 README 5부에 있다.
+
+처음 구현은 leaf를 늘 반반으로 나누고 rebuild도 키를 하나씩 삽입해, 100만 건에서 `date.idx` 20.7MB, compact 25.46s, import 325MB였다. 끝에 붙인 키 분할(3절 3·4번), 일괄 생성(3절 6번), 묶음 확정과 배열·정렬로 지금 수치가 됐다.
 
 환경과 전체 수치는 [`bplustree-benchmark.json`](bplustree-benchmark.json)에 보존했다.
 
 ## 6. 테스트 실행 결과
 
 수정 전 기존 테스트: **17개 통과** (0.526초).
-최종 실행: **40개 모두 통과** (30.212초). 기존 17개 + B+Tree 10개 + 저장소/마이그레이션/파일 간 복구 13개다.
-`python -m compileall -q budget_app tests tools` 및 `git diff --check`도 통과했다.
-
-이번 한국어 설명 보완은 주석과 문서 문자열만 바꿨다. `bplustree.py`, `durability.py`, `repository.py`를 이전 커밋과 비교해 **문서 문자열을 제외한 AST(Abstract Syntax Tree, 추상 구문 트리)가 동일**함을 확인했다. AST는 프로그램의 식·분기·호출 등을 문법 구조로 표현한 것이다. 이 비교로 설명을 추가하는 과정에서 필드 형식이나 저장·복구 연산이 바뀌지 않았는지 확인했다. 보고서의 Python 예제도 실제 실행해 80/84바이트 크기와 바이트 순서 검증을 통과했다. 기능 테스트 수치와 성능 표는 앞선 구현 검증 결과이며, 주석 보완 때문에 성능을 다시 측정하지 않았다.
+현재 실행: **44개 중 43개 통과, 1개 건너뜀** (13.7초). 기존 17개 + B+Tree 13개 + 저장소/마이그레이션/파일 간 복구 14개다. 건너뛴 1개는 10만 번 개별 삽입 테스트로, `BUDGET_SLOW_TESTS=1`을 주면 실행된다(약 108초, 통과).
+`python -m mypy budget_app tests tools`도 오류 없이 통과했다.
 
 ```text
-Ran 40 tests in 30.212s
+Ran 44 tests in 13.683s
 
-OK
+OK (skipped=1)
 ```
 
 검증 범위:
 
-- 4096바이트 페이지에 **10만 번 개별 merge 호출**: fsync·WAL 활성, 과거/동일 날짜 혼합, 독립 `sorted()` oracle와 양방향 전체 결과 대조, 높이 3 이상 확인.
+- 4096바이트 페이지, 높이 3: 10만 키를 일괄 생성한 뒤 과거·미래·중간 날짜 키 300개를 **fsync·WAL을 켠 채 하나씩 merge**. 독립 `sorted()` oracle와 양방향 전체 결과 대조, 페이지 분할 발생과 WAL 정리 확인. 10만 번을 모두 하나씩 넣는 원래 검증은 선택 실행으로 남겼다.
+- 일괄 생성: 키 1·18·19·145·3000개에서 leaf 수가 최소(꽉 참)인지, 같은 키 중복 제거, 정렬되지 않은 입력 거부와 원본 파일 유지. 날짜순으로 이어 넣어도 leaf 수가 최소인지.
+- 묶음 확정: 상한을 8페이지로 낮춰 여러 번 확정되는지, 결과·구조가 정답과 같은지, WAL이 남지 않는지.
 - **10만 거래 저장**: 범위 조회, 과거 추가, 날짜 수정, 거래 삭제, compact 전후 내용·id·최대 발급 id 보존 확인.
+- 큰 import의 일괄 생성 경로: 날짜 인덱스 교체 전·후에 중단해도 목록이 import 전과 같고, 다시 import하면 정상이며 leaf가 꽉 차는지.
 - 256바이트 페이지에서 높이 4 이상 트리: 매 배치마다 자식 키 수·separator·동일 leaf 깊이·페이지 도달성·양방향 링크 검증. 순위 API 및 key-range 결과를 Python bisect/정렬 결과와 대조.
 - 동일 키 재삽입 무변경, 같은 날짜 정렬, 날짜 원복 수정 중복 방지, 빈 범위·최대 날짜·32-bit를 넘는 id·uint64 최댓값 확인.
 - 기존 파일·stale/삭제/고아 항목 마이그레이션, 원본 백업 바이트 동일성, 백업 실패, 교체 전후 중단, 누락/손상 인덱스 재생성 확인.
@@ -329,31 +362,25 @@ OK
 - 실제 별도 Python 프로세스를 `os._exit`로 종료: WAL 임시 저장/publish/페이지 기록/root 기록/data fsync/WAL 제거, root split, 다단계 internal split, 거래 슬롯 커밋 직전. 새 인스턴스에서 복구 결과 확인.
 - 페이지·root torn-write, 손상 WAL·슬롯 undo 체크섬, JSONL 후 날짜 기록 실패, WAL rename 실패, 슬롯 부분 쓰기 및 복구 중 재중단 검증.
 
+테스트 밖에서 따로 확인한 것:
+
+- 무작위 검증 252회: 페이지 256/512/4096바이트, 키 0~2만 개(경계값 포함)에서 일괄 생성, 끝에 붙이기, 무작위 삽입, `rebuild_merged`를 섞어 매번 정답·구조 검사와 비교.
+- 큰 import 강제 종료 60회: 200건이 있는 저장소에 6천 건 import를 무작위 시점에 SIGKILL. 매번 import 전(39회) 또는 후(21회) 상태였고 이후 import도 정상.
+- 묶음 확정 강제 종료 2,551회(상한 4페이지): 매번 트리가 온전하고 결과가 "변경 전 ⊆ 결과 ⊆ 변경 후".
+
 프로세스 강제 종료와 파일 바이트 손상으로 장애 경계를 시험했으며, 물리 전원 차단 장비로 시험한 것은 아니다.
 
 ## 7. 재현 명령 및 배포 상태
 
 ```bash
-python -m unittest discover -s tests -v
-python -m compileall -q budget_app tests tools
+python -m unittest discover -s tests -v                        # 기본(약 14초)
+BUDGET_SLOW_TESTS=1 python -m unittest discover -s tests -v    # 10만 번 개별 삽입까지(약 2분 더)
+python -m mypy budget_app tests tools
 python tools/bench_date_index.py --sizes 10000 100000 --samples 15 --out doc/bplustree-benchmark.json
+python tools/bench_large.py --n 1000000 [--app-dir ../AllowanceTracker-sorted]   # 5절 명령 단위 비교
 ```
 
-원본 전체 파일·트리·커밋은 GitHub 플러그인으로 확보하고 해시 검증하여 원본 커밋을 가진 shallow Git 작업 트리로 복원했다. 로컬 `feat/bplustree-date-index` 브랜치에서 작업했다. 플러그인의 원격 브랜치 생성은 `403 Resource not accessible by integration`으로 거부되었으므로 원격 반영은 완료하지 않았다. 최종 패치로 기존 저장소에 동일 변경을 적용할 수 있다.
-
-패치를 적용할 때는 원래 저장소의 기준 커밋 또는 이를 포함한 main에서 다음처럼 새 브랜치를 만든다(같은 이름의 브랜치가 이미 있다면 기존 작업을 먼저 확인한다).
-
-```bash
-git switch -c feat/bplustree-date-index
-git am /path/to/AllowanceTracker-bplustree.patch
-```
-
-Git bundle을 사용할 때는 기준 커밋이 있는 기존 저장소에서 다음 명령으로 브랜치와 커밋을 가져올 수 있다. bundle은 기준 커밋 이후 변경만 포함한다.
-
-```bash
-git fetch /path/to/AllowanceTracker-bplustree.bundle feat/bplustree-date-index:feat/bplustree-date-index
-git switch feat/bplustree-date-index
-```
+`feat/bplustree-date-index` 브랜치로 원격 저장소에 올라가 있다. 비교 기준은 태그 `sorted-array-baseline`(커밋 `4713a5b`)이며, main에 합친 뒤에도 이 태그로 예전 버전을 꺼내 같은 방법으로 비교할 수 있다. `tools/bench_date_index.py`는 태그를 받지 않은 클론에서도 동작하도록 같은 커밋을 해시로 고정해 쓴다.
 
 ## 8. 소스코드를 읽는 순서
 
@@ -366,7 +393,7 @@ git switch feat/bplustree-date-index
 | 3 | `_Session.read/save/new` | 디스크 페이지를 읽어 두는 캐시와 아직 확정하지 않은 dirty 페이지를 구분한다. `save()`는 즉시 디스크에 쓰는 함수가 아니다. |
 | 4 | `_Session.find/select` | 키를 찾는 경우와 정렬 순위로 찾는 경우를 구분한다. `path`는 나중에 부모를 되짚는 경로다. |
 | 5 | `DateIndex.iter_range`, `_iter_ranks` | 시작 leaf만 찾고 prev/next로 이동한다. 범위의 끝 `upper`/`hi`는 포함하지 않는다. |
-| 6 | `DateIndex._insert` | leaf split에서는 키를 부모에 복사하고, internal split에서는 가운데 키를 부모로 승격하는 차이를 본다. |
+| 6 | `DateIndex._insert`, `rebuild`, `_bulk_load` | leaf split에서는 키를 부모에 복사하고, internal split에서는 가운데 키를 부모로 승격하는 차이를 본다. 맨 끝에 붙인 키로 넘치면 한쪽으로 몰아 나누는 조건도 본다. 일괄 생성은 삽입 없이 leaf를 왼쪽부터 꽉 채워 쓴다. |
 | 7 | `DateIndex._commit`, `_apply` | WAL 임시 저장 → 이름 확정 → 노드 기록 → 메타데이터 기록 → fsync → WAL 삭제의 순서를 본다. |
 | 8 | `DateIndex.recover` | 어떤 페이지도 덮기 전에 WAL 전체를 검사하는 이유, 같은 이미지를 다시 써도 복구를 반복할 수 있는 이유를 본다. |
 | 9 | `durability.py`의 `SlotUndo.prepare/commit/recover` | 거래번호 슬롯은 왜 redo가 아니라 이전 바이트로 undo하는지, 기록 삭제가 왜 거래 완료 시점인지 본다. |
