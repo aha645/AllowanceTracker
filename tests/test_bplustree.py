@@ -123,6 +123,24 @@ class BPlusTreeTests(unittest.TestCase):
         self.assertEqual(list(index.iter_range()), sorted(keys + [(700000, 1)]))
         self.assertFalse(index.wal_path.exists())
 
+    def test_100000_keys_then_individual_inserts_default_pages(self) -> None:
+        # 기본 페이지에서 높이 3 이상인 트리를 일괄 생성으로 빠르게 만든 뒤, 그 위에 하나씩 넣는다.
+        # 하나씩 넣는 쪽은 fsync·WAL 을 가짜로 바꾸지 않는다. 일괄 생성한 leaf 는 꽉 차 있어 넣을 때마다
+        # leaf 나누기가 실제로 일어난다. 10만 건을 모두 하나씩 넣는 원래 검증은 아래 slow 테스트에 있다.
+        index = DateIndex(self.path)
+        base = [(700000 + (i * 7919) % 3653, i + 1) for i in range(100000)]
+        index.rebuild(sorted(base))
+        pages = index.validate()["pages"]
+        # 과거·미래·기존 범위 안의 날짜를 섞고, 같은 날짜에도 서로 다른 id 를 준다.
+        rng = random.Random(7919)
+        added = [(699000 + rng.randrange(6000), 100000 + i + 1) for i in range(300)]
+        for key in added:
+            index.merge([key])
+        self.assertGreater(index.validate()["pages"], pages)  # 실제로 페이지를 나눴다
+        self.assertFalse(index.wal_path.exists())
+        self.check_default_page_tree(index, sorted(base + added))
+
+    @unittest.skipUnless(os.environ.get("BUDGET_SLOW_TESTS"), "BUDGET_SLOW_TESTS=1 일 때만 실행(약 2분)")
     def test_100000_individual_inserts_default_pages(self) -> None:
         index = DateIndex(self.path)
         index.rebuild(())
@@ -131,17 +149,20 @@ class BPlusTreeTests(unittest.TestCase):
         keys = [(700000 + (i * 7919) % 3653, i + 1) for i in range(100000)]
         for key in keys:
             index.merge([key])
-        oracle = sorted(keys)
+        self.check_default_page_tree(index, sorted(keys))
+
+    def check_default_page_tree(self, index: DateIndex, oracle: list[tuple[int, int]]) -> None:
+        """기본 페이지 트리의 구조·정렬·읽는 페이지 수를 정답 목록과 비교한다."""
         info = index.validate()
-        self.assertEqual(info["entries"], 100000)
+        self.assertEqual(info["entries"], len(oracle))
         self.assertGreaterEqual(info["height"], 3)
         self.assertEqual(info["page_size"], PAGE_SIZE)
         self.assertEqual(self.path.stat().st_size % PAGE_SIZE, 0)
         self.assertEqual(list(index.iter_range()), oracle)
         self.assertEqual(list(index.iter_range(reverse=True)), oracle[::-1])
-        self.assertEqual(DateIndex(self.path).count(), 100000)
+        self.assertEqual(DateIndex(self.path).count(), len(oracle))
         # Read work scales with tree height; an old-date insert doesn't scan N keys.
-        index.merge([(699999, 100001)])
+        index.merge([(699999, 10**9)])
         self.assertLessEqual(index.last_page_reads, info["height"] + 2)
         self.assertTrue(index.contains(oracle[43210]))
         self.assertLessEqual(index.last_page_reads, info["height"] + 1)

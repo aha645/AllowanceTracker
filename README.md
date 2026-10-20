@@ -37,6 +37,7 @@ data/
 
 ```bash
 python -m unittest discover -s tests -v    # 기존 17개 + B+Tree/복구/10만 건 검증
+BUDGET_SLOW_TESTS=1 python -m unittest discover -s tests -v    # 10만 건을 하나씩 넣는 큰 검증까지(약 2분 더)
 
 # 090(import) 까지만: 000 부터 그 번호까지 함께 지정 (-k 는 이름에 그 글자가 든 테스트를 고름)
 python -m unittest tests.test_requirement_checklist -v -k 000 -k 010 -k 020 -k 030 -k 040 -k 050 -k 060 -k 070 -k 080 -k 090
