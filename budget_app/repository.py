@@ -208,6 +208,7 @@ class TransactionRepository:
         self.compact_tmp_log_path: Path = self.log_path.with_suffix(".jsonl.tmp")
         # import 가 위치 슬롯 묶음을 쓰기 전의 위치 파일 크기를 적어 두는 파일. 있으면 import 가 끝나지 않은 것이다.
         self.import_journal_path: Path = self.data_dir / (self.IDX_NAME + ".import-pending")
+        # 16바이트 슬롯 쓰기가 도중에 끊겨도 원래 길이/슬롯으로 되돌릴 수 있게 한다.
         self.slot_undo = SlotUndo(self.idx_path)
         #: 이번 실행에서 자동으로 바로잡은 일(사용자에게 [안내] 로 알린다).
         self.recovered: list[str] = []
@@ -221,6 +222,7 @@ class TransactionRepository:
         self._recover_interrupted_compact()  # 위치 인덱스를 통째로 되돌릴 수 있으므로 가장 먼저
         self.index.ensure()
         self._recover_interrupted_import()  # 조각 정리보다 먼저: import 의 조각은 묶음째 잘라 낸다
+        # 거래 존재 여부의 기준인 idx를 먼저 바로잡은 다음 날짜 보조 인덱스를 복구한다.
         if self.slot_undo.recover():
             self.recovered.append("끝나지 않은 거래 저장의 위치 슬롯을 이전 상태로 복구했습니다.")
         if self.index.drop_partial_slot():
@@ -228,12 +230,13 @@ class TransactionRepository:
         # 날짜 인덱스가 없거나 손상됐으면(예: 이 인덱스가 생기기 전의 데이터) 원본에서 자동 재생성한다.
         if not self.date_index.is_valid():
             if self.date_index.is_legacy():
+                # 마이그레이션이 실패해도 원본 배열을 잃지 않도록 백업을 먼저 확정한다.
                 self._backup_legacy_date_index()
                 self.recovered.append("기존 날짜 인덱스를 B+Tree로 마이그레이션했습니다. 원본은 .legacy.bak에 보존했습니다.")
             self.rebuild_date_index()
 
     def _backup_legacy_date_index(self) -> None:
-        """Preserve the exact old array before any atomic migration replacement."""
+        """기존 정렬 배열의 바이트를 그대로 보존한 뒤에만 B+Tree로 교체하도록 한다."""
         backup = self.date_idx_path.with_name(self.DATE_IDX_NAME + ".legacy.bak")
         if backup.exists():
             return
@@ -299,6 +302,7 @@ class TransactionRepository:
         # 날짜 색인에만 빠져 list/summary 에서 조용히 사라진다. 이 순서면 꺼져도 남는 건 슬롯 범위 밖
         # id 의 날짜 항목뿐이라 읽을 때 건너뛰고, 그 id 는 다음 add 때 다시 발급된다.
         self.date_index.merge([(date_ordinal(stored.date), stored.id)])
+        # 날짜 키의 WAL 완료는 거래 완료가 아니다. idx를 쓰기 전에 undo를 먼저 확정한다.
         self.slot_undo.prepare(new_id)
         assigned = self.index.append_slot(start, end)
         if assigned != new_id:  # pragma: no cover - 동시 실행 방어
@@ -312,9 +316,9 @@ class TransactionRepository:
     def append_transactions(self, transactions: Iterable[Transaction]) -> int:
         """여러 거래를 한 번에 저장하고 저장한 건수를 돌려준다(import 용).
 
-        로그 레코드와 인덱스 슬롯은 각각 한 번에 이어 쓰고(fsync 도 파일당 한 번), 날짜 인덱스는 모아서
-        한 번에 병합한다. 옛 날짜가 섞여 있어도 행마다 파일을 다시 쓰지 않는다.
-        거래 객체는 쓰고 나면 버리므로(제너레이터를 넘기면) 메모리가 건수만큼 늘지 않는다.
+        로그 레코드와 인덱스 슬롯은 각각 이어 쓰고, 날짜 페이지 변경은 WAL 하나로 묶는다.
+        옛 날짜가 섞여 있어도 행마다 인덱스 파일 전체를 다시 쓰지 않는다.
+        거래 객체 자체는 모으지 않지만 슬롯·키·변경 페이지 메모리는 배치 크기에 비례한다.
         """
         self.ensure_files()
         next_id = self.index.next_id()
@@ -402,6 +406,7 @@ class TransactionRepository:
         # 없어, 수정한 거래가 목록에서 사라진다.
         if old.date != tx.date:
             self.date_index.merge([(date_ordinal(tx.date), tx.id)])
+        # 날짜가 그대로인 금액 수정도 슬롯 위치는 바뀌므로 undo가 필요하다.
         self.slot_undo.prepare(tx.id)
         self.index.write_slot(tx.id, start, end)
         self.slot_undo.commit()
@@ -416,6 +421,7 @@ class TransactionRepository:
                 f"TX-{tx_id} 거래를 찾을 수 없습니다.",
                 "이미 삭제되었거나 발급된 적 없는 id 입니다. list 로 확인하세요.",
             )
+        # 삭제도 0 덮어쓰기 중간에 끊길 수 있다. 날짜 키를 남겨도 슬롯이 0이면 조회가 제외한다.
         self.slot_undo.prepare(tx_id)
         self.index.clear_slot(tx_id)
         self.slot_undo.commit()
@@ -465,6 +471,8 @@ class TransactionRepository:
         """
         if not self.log_path.exists():
             return
+        # 트리 API의 upper는 미포함이다. 종료일의 다음 ordinal을 주면 종료일 전체가 포함된다.
+        # 실제 키의 id는 1 이상이므로 경계용 id=0은 그 날짜의 모든 거래 앞에 놓인다.
         lower = (date_ordinal(date_from), 0) if date_from else None
         upper = (date_ordinal(date_to) + 1, 0) if date_to else None
         # 날짜 항목의 id 를 슬롯 수와 비교해, 중단된 저장의 흔적(건너뜀)과 손상(오류)을 구분한다.
