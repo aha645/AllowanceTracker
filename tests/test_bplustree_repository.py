@@ -1,4 +1,4 @@
-"""Repository compatibility, migration, 100k rows and cross-file recovery."""
+"""Repository compatibility, date index rebuild, 100k rows and cross-file recovery."""
 
 from __future__ import annotations
 
@@ -89,7 +89,7 @@ class RepositoryBPlusTreeTests(unittest.TestCase):
         self.repo.compact()
         self.assertEqual(self.repo.append_transaction(tx()).id, 401)
 
-    def test_migration_keeps_exact_legacy_backup_ids_and_deleted_slots(self) -> None:
+    def test_old_format_index_rebuilt_without_backup_keeps_ids_and_deleted_slots(self) -> None:
         self.repo.append_transactions([tx("2024-03-01"), tx("2023-01-01"), tx("2024-03-01")])
         self.repo.update_transaction(self.repo.get_transaction(2).replace_fields(date="2025-01-01"))
         self.repo.delete_transaction(3)
@@ -102,17 +102,17 @@ class RepositoryBPlusTreeTests(unittest.TestCase):
         legacy = b"".join(DATE_ENTRY_STRUCT.pack(*key) for key in legacy_keys)
         self.repo.date_idx_path.write_bytes(legacy)
         reopened = self.open_repo()
+        self.assertIn("다시 만들었습니다", " ".join(reopened.recovered))
         self.assertEqual(self.listing(reopened), before)
         self.assertEqual(reopened.log_path.read_bytes(), log_before)
         self.assertEqual(reopened.idx_path.read_bytes(), idx_before)
-        backup = self.folder / "transactions.date.idx.legacy.bak"
-        self.assertEqual(backup.read_bytes(), legacy)
+        self.assertEqual(sorted(path.name for path in self.folder.glob("transactions.date.idx*")),
+                         ["transactions.date.idx"])  # 예전 형식은 백업하지 않는다
         self.assertEqual(reopened.date_index.validate()["entries"], 2)
         self.assertEqual(reopened.append_transaction(tx()).id, 4)
-        self.open_repo()
-        self.assertEqual(backup.read_bytes(), legacy)
+        self.assertEqual(self.open_repo().recovered, [])  # 다시 만든 뒤에는 안내가 없다
 
-    def test_migration_and_rebuild_interrupted_before_and_after_replace(self) -> None:
+    def test_old_format_rebuild_interrupted_before_and_after_replace(self) -> None:
         self.repo.append_transactions([tx(), tx("2023-01-01")])
         expected = self.listing(self.repo)
         legacy = b"".join(DATE_ENTRY_STRUCT.pack(date_ordinal(day), tx_id)
@@ -130,7 +130,7 @@ class RepositoryBPlusTreeTests(unittest.TestCase):
                 with mock.patch("budget_app.bplustree.os.replace", side_effect=stop), self.assertRaises(KeyboardInterrupt):
                     self.open_repo()
                 self.assertEqual(self.listing(), expected)
-                self.assertEqual((self.folder / "transactions.date.idx.legacy.bak").read_bytes(), legacy)
+                self.assertFalse((self.folder / "transactions.date.idx.legacy.bak").exists())
 
     def test_large_import_rebuilds_merged_index_and_survives_interruption(self) -> None:
         # 넣을 건수가 기존 키 이상이면 삽입 대신 기존 키와 합쳐 새로 만든다(rebuild_merged).
@@ -191,19 +191,24 @@ class RepositoryBPlusTreeTests(unittest.TestCase):
         self.assertEqual(self.listing(), expected)
         self.assertEqual(self.open_repo().append_transaction(tx()).id, 2)
 
-    def test_legacy_backup_failure_keeps_original(self) -> None:
-        self.repo.append_transaction(tx())
-        legacy = DATE_ENTRY_STRUCT.pack(date_ordinal("2024-01-15"), 1)
-        self.repo.date_idx_path.write_bytes(legacy)
-        before_log = self.repo.log_path.read_bytes()
-        before_idx = self.repo.idx_path.read_bytes()
-        with mock.patch("budget_app.repository.shutil.copyfile", side_effect=OSError("disk full")), \
-             self.assertRaises(OSError):
-            self.open_repo()
-        self.assertEqual(self.repo.date_idx_path.read_bytes(), legacy)
-        self.assertEqual(self.repo.log_path.read_bytes(), before_log)
-        self.assertEqual(self.repo.idx_path.read_bytes(), before_idx)
-        self.assertEqual(self.open_repo().date_index.validate()["entries"], 1)
+    def test_damaged_header_with_size_multiple_of_12_is_rebuilt_as_damage(self) -> None:
+        # 예전에는 크기가 12의 배수인 손상 파일을 예전 형식으로 오인해 "마이그레이션" 안내와 백업을 만들었다.
+        self.repo.append_transactions([tx(), tx("2023-01-01"), tx("2025-01-01")])
+        expected = self.listing(self.repo)
+        raw = bytearray(self.repo.date_idx_path.read_bytes())
+        raw += bytes(-len(raw) % 12288)  # 4096바이트 페이지 3개 단위 → 12의 배수
+        raw[:8] = bytes(8)  # 파일 종류 표시가 지워진 손상
+        self.assertEqual(len(raw) % 12, 0)
+        self.repo.date_idx_path.write_bytes(raw)
+        before_log, before_idx = self.repo.log_path.read_bytes(), self.repo.idx_path.read_bytes()
+        reopened = self.open_repo()
+        self.assertEqual(reopened.recovered,
+                         ["날짜 인덱스를 읽을 수 없어(손상 또는 예전 형식) 거래 파일에서 다시 만들었습니다."])
+        self.assertEqual(self.listing(reopened), expected)
+        self.assertEqual(reopened.log_path.read_bytes(), before_log)
+        self.assertEqual(reopened.idx_path.read_bytes(), before_idx)
+        self.assertFalse((self.folder / "transactions.date.idx.legacy.bak").exists())
+        self.assertEqual(reopened.date_index.validate()["entries"], 3)
 
     def test_wal_replay_still_does_not_commit_repository_transaction(self) -> None:
         old = self.repo.append_transaction(tx())

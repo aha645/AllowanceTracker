@@ -352,13 +352,6 @@ class DateIndex:
         except (FileNotFoundError, StorageError):
             return False
 
-    def is_legacy(self) -> bool:
-        """12바이트 배열 크기이고 B+Tree magic이 없으면 기존 형식 후보로 본다."""
-        if not self.path.exists() or self.size() % KEY.size:
-            return False
-        with self.path.open("rb") as fp:
-            return fp.read(8) != MAGIC
-
     def _open(self) -> tuple[BinaryIO, _Session]:
         """남은 WAL을 먼저 처리하고 새 작업을 연다. 실패하면 파일도 닫는다."""
         self.recover()
@@ -623,7 +616,7 @@ class DateIndex:
 
         entries 는 오름차순이어야 한다(같은 키는 한 번만 둔다). 키를 하나씩 삽입하지 않고 leaf 를 왼쪽부터
         꽉 채워 쓴 다음 그 위층을 아래에서부터 쌓는다(_bulk_load). 중간에 실패하면 원래 인덱스는 유지된다.
-        legacy 원본 백업은 저장소가 먼저 한다. 재생성한 파일에는 새 UUID를 부여해 이전 파일의 WAL과 구별한다.
+        재생성한 파일에는 새 UUID를 부여해 이전 파일의 WAL과 구별한다.
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(self.path.name + ".build")

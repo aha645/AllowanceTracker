@@ -256,25 +256,13 @@ class TransactionRepository:
             self.recovered.append("끝나지 않은 거래 저장의 위치 슬롯을 이전 상태로 복구했습니다.")
         if self.index.drop_partial_slot():
             self.recovered.append("끝나지 않은 마지막 저장(add)의 조각을 정리했습니다. 그 거래는 저장되지 않았습니다.")
-        # 날짜 인덱스가 없거나 손상됐으면(예: 이 인덱스가 생기기 전의 데이터) 원본에서 자동 재생성한다.
+        # 날짜 인덱스가 없거나 B+Tree 로 읽을 수 없으면 원본(idx+jsonl)에서 다시 만든다. 날짜 인덱스는 보조
+        # 자료라 따로 백업하지 않는다. 예전 정렬 배열 형식도 여기서 손상과 똑같이 다시 만들어진다.
         if not self.date_index.is_valid():
-            if self.date_index.is_legacy():
-                # 마이그레이션이 실패해도 원본 배열을 잃지 않도록 백업을 먼저 확정한다.
-                self._backup_legacy_date_index()
-                self.recovered.append("기존 날짜 인덱스를 B+Tree로 마이그레이션했습니다. 원본은 .legacy.bak에 보존했습니다.")
+            damaged = self.date_idx_path.exists()  # 없던 파일(첫 실행)은 조용히 만든다
             self.rebuild_date_index()
-
-    def _backup_legacy_date_index(self) -> None:
-        """기존 정렬 배열의 바이트를 그대로 보존한 뒤에만 B+Tree로 교체하도록 한다."""
-        backup = self.date_idx_path.with_name(self.DATE_IDX_NAME + ".legacy.bak")
-        if backup.exists():
-            return
-        tmp = backup.with_name(backup.name + ".tmp")
-        shutil.copyfile(self.date_idx_path, tmp)
-        with tmp.open("rb") as fp:
-            os.fsync(fp.fileno())
-        os.replace(tmp, backup)
-        _fsync_dir(self.data_dir)
+            if damaged:
+                self.recovered.append("날짜 인덱스를 읽을 수 없어(손상 또는 예전 형식) 거래 파일에서 다시 만들었습니다.")
 
     def _live_date_entries(self) -> Iterator[DateEntry]:
         """살아있는 모든 거래의 (날짜 순번, id) 를 id 순서로 yield 한다."""

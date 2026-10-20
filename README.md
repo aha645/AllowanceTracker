@@ -1,6 +1,6 @@
 # AllowanceTracker — 콘솔 가계부 (`budget_app`)
 
-날짜 인덱스는 이제 **4096바이트 디스크 B+Tree + 페이지 WAL**입니다. 기존 정렬 배열은 최초 실행 때 원본 `.legacy.bak`를 보존하고 자동 마이그레이션합니다. JSONL, 16바이트 거래번호 슬롯, 기존 id와 CLI는 유지합니다. [구현·복구·테스트·성능 보고서](doc/bplustree-report.md), [구현 전 분석 및 설계](doc/bplustree-design.md)를 참고하세요.
+날짜 인덱스는 이제 **4096바이트 디스크 B+Tree + 페이지 WAL**입니다. 예전 정렬 배열 형식은 지원하지 않으며, 그런 파일이 있으면 손상된 파일과 똑같이 거래 파일에서 다시 만듭니다(따로 백업하지 않음). JSONL, 16바이트 거래번호 슬롯, 기존 id와 CLI는 유지합니다. [구현·복구·테스트·성능 보고서](doc/bplustree-report.md), [구현 전 분석 및 설계](doc/bplustree-design.md)를 참고하세요.
 
 표준 라이브러리만 사용하는 CLI 가계부입니다. 거래를 기록/검색/수정/삭제하고, 월별 요약과 예산 사용률을 확인하며, CSV 로 주고받을 수 있습니다.
 (요구사항 원문: [`doc/request.md`](doc/request.md))
@@ -826,7 +826,6 @@ transactions.jsonl
 | `transactions.date.idx` | **(거래일자, id) B+Tree** — 4096바이트 페이지, leaf 키 12바이트 | 변경 페이지만 WAL 후 갱신 |
 | `transactions.date.idx.wal` | 변경 페이지 전체 이미지와 SHA-256 | 복구 시 redo, 완료 후 삭제 |
 | `transactions.idx.slot-undo` | 단일 슬롯의 이전 16바이트와 이전 파일 길이 | 복구 시 undo, 완료 후 삭제 |
-| `transactions.date.idx.legacy.bak` | 최초 마이그레이션 이전 정렬 배열 원본 | 마이그레이션 시 한 번 보존 |
 | `categories.jsonl` · `budgets.jsonl` | 카테고리와 **사용 건수** / 월별 예산 | 전체 재작성 (임시파일 + `os.replace`) |
 | `recurring.jsonl` | 반복 거래 규칙 (보너스) | 전체 재작성 (임시파일 + `os.replace`) |
 | `backup/` | `backup` 명령이 만드는 백업 | 타임스탬프 폴더 |
@@ -1058,7 +1057,7 @@ python tools/bench_date_index.py --sizes 10000 100000 --samples 15 --out doc/bpl
 | 3 | `transactions.idx.slot-undo` 가 남아 있나 (거래 1건 저장이 끝나지 않음) | 위치 파일을 기록된 길이로 자르거나 원래 16바이트로 되돌림 → **그 거래는 바꾸기 전 상태** |
 | 4 | `transactions.idx` 끝에 16바이트가 안 되는 조각이 있나 | 조각을 잘라 냄 |
 | 5 | `transactions.date.idx.wal` 이 남아 있나 (날짜 인덱스 갱신이 끝나지 않음) | 체크섬이 맞으면 그 내용을 본 파일에 다시 써서 마무리. 망가졌으면 버리고 6번으로 |
-| 6 | `transactions.date.idx` 가 없거나 머리말·파일 크기가 맞지 않나 | 위치·내용 파일에서 처음부터 다시 만듦. 예전 형식(12바이트 정렬 배열)이면 원본을 `.legacy.bak` 으로 보존한 뒤 변환 |
+| 6 | `transactions.date.idx` 가 없거나 머리말·파일 크기가 맞지 않나 (예전 정렬 배열 형식 포함) | 위치·내용 파일에서 처음부터 다시 만듦. 파일이 있었으면 `[안내]` 로 알림(첫 실행처럼 없던 파일은 조용히 만듦). 날짜 인덱스는 보조 자료라 백업하지 않음 |
 | 7 | `categories.jsonl` 에 `count` 가 없는 예전 형식인가 | 거래를 한 번 세어 채움 |
 
 leaf 페이지 안쪽의 손상은 시작할 때 모두 훑지 않고(100만 건이면 수천 페이지), 읽다가 체크섬이 맞지 않으면 `[오류]` 와 함께 `compact`(날짜 인덱스 재생성)를 안내합니다.

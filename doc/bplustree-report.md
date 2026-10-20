@@ -9,18 +9,18 @@
 |---|---|
 | `budget_app/bplustree.py` | 직접 구현한 디스크 B+Tree, 바이너리 페이지, 분할, 순위·범위·양방향 스캔, CRC32, redo WAL, 구조 검사 |
 | `budget_app/durability.py` | durable 원자 파일 저장, 거래번호 슬롯 undo 기록 및 재시작 복구 |
-| `budget_app/repository.py` | DateIndex 교체·재노출, 키 경계 조회, 64-bit id 보존, legacy 백업·자동 마이그레이션, 슬롯 undo 통합 |
+| `budget_app/repository.py` | DateIndex 교체·재노출, 키 경계 조회, 64-bit id 보존, 읽을 수 없는 날짜 인덱스(예전 형식 포함) 재생성, 슬롯 undo 통합 |
 | `tests/test_bplustree.py` | 독립 정렬 oracle, 일괄 생성·끝에 붙인 키 분할, 묶음 확정, 10만 번 개별 삽입(선택 실행), 기본/작은 페이지 분할, WAL·root·페이지 손상, 프로세스 강제 종료 및 재복구 |
-| `tests/test_bplustree_repository.py` | 10만 거래, 수정·삭제·compact, CSV·recurring·backup, 기존 파일 마이그레이션, 파일 간 일관성·슬롯 장애 복구, 큰 import 의 재생성 중단 |
+| `tests/test_bplustree_repository.py` | 10만 거래, 수정·삭제·compact, CSV·recurring·backup, 예전 형식·손상 인덱스 재생성, 파일 간 일관성·슬롯 장애 복구, 큰 import 의 재생성 중단 |
 | `tests/test_requirement_checklist.py` | 기존 17개 시나리오 유지. 150번의 배열 크기·손상 바이트 위치만 페이지 형식에 맞게 변경 |
 | `tools/bench_date_index.py` | 원본 커밋의 실제 Sorted Array 구현과 동일 입력·실제 fsync 비교 |
 | `tools/bench_large.py` | `--app-dir` 로 다른 폴더(예: worktree 로 꺼낸 기준 태그)의 CLI 를 같은 조건으로 측정 |
 | `doc/bplustree-design.md` | 구현 전 전체 소스 분석 및 호환성·복구 설계 결정 |
 | `doc/bplustree-benchmark.json` | 성능 원시 결과, 환경·표본 수·최솟값·중앙값·최댓값 |
-| `README.md` | 현재 포맷·마이그레이션 안내. 5부(대용량 측정)는 두 버전 비교로, 6부(전원 차단 복구)는 현재 쓰기 순서로 다시 씀 |
+| `README.md` | 현재 포맷 안내. 5부(대용량 측정)는 두 버전 비교로, 6부(전원 차단 복구)는 현재 쓰기 순서로 다시 씀 |
 | `doc/bplustree-report.md` | 이 보고서 |
 
-SQLite나 외부 DB·패키지를 사용하지 않는다. 기존 CLI, CSV 스키마와 검증/skip 정책, 카테고리·예산·반복 규칙 기능을 유지한다. `transactions.jsonl`은 append-only이며 수정도 끝에 추가한다. `transactions.idx`는 기존 `<QQ` 16바이트 구조이고 id `N`의 슬롯은 `(N-1)*16`이다. 삭제 슬롯과 최대 발급 id를 compact·마이그레이션에서도 보존한다.
+SQLite나 외부 DB·패키지를 사용하지 않는다. 기존 CLI, CSV 스키마와 검증/skip 정책, 카테고리·예산·반복 규칙 기능을 유지한다. `transactions.jsonl`은 append-only이며 수정도 끝에 추가한다. `transactions.idx`는 기존 `<QQ` 16바이트 구조이고 id `N`의 슬롯은 `(N-1)*16`이다. 삭제 슬롯과 최대 발급 id를 compact·날짜 인덱스 재생성에서도 보존한다.
 
 이전 날짜 항목과 삭제된 거래 항목은 **기존처럼 남겨 두고** 현재 슬롯·실제 날짜와 맞지 않으면 조회에서 제외한다. B+Tree의 물리 삭제/재균형은 추가하지 않았으며 기존 `compact`가 stale 항목을 제거한다. 따라서 여기서 N은 살아있는 거래 수가 아니라 compact 전 인덱스 키 수다.
 
@@ -47,7 +47,7 @@ SQLite나 외부 DB·패키지를 사용하지 않는다. 기존 CLI, CSV 스키
 | cache / dirty page | 캐시 / 변경된 페이지 | 캐시는 읽어 둔 페이지, dirty page는 메모리에서 바뀌어 아직 파일에 반영해야 하는 페이지다. |
 | after-image | 변경 후의 전체 모습 | 명령 이름이나 차이만 저장하는 대신, 변경 후 페이지 전체 바이트를 WAL에 저장한다는 뜻이다. |
 | commit / rollback | 완료 확정 / 취소 복원 | 복구 기준으로 작업을 끝낸 상태와, 미완료 작업을 이전 상태로 돌리는 동작이다. 인덱스 작업의 commit과 거래 자체의 commit은 구분한다. |
-| stale / orphan / legacy | 더 이상 유효하지 않음 / 참조되지 않음 / 이전 형식 | 이전 날짜 키는 stale, 어떤 유효 슬롯도 가리키지 않는 JSONL 줄은 orphan, 기존 정렬 배열은 legacy다. |
+| stale / orphan | 더 이상 유효하지 않음 / 참조되지 않음 | 이전 날짜 키는 stale, 어떤 유효 슬롯도 가리키지 않는 JSONL 줄은 orphan이다. |
 | compact / migration | 압축 정리 / 형식 이행 | compact는 유효 데이터만 다시 저장하고, migration은 같은 거래를 유지하면서 저장 형식을 바꾼다. |
 
 `flush()`는 Python의 쓰기 버퍼에 있던 내용을 운영체제로 보내는 작업이다. `fsync()`는 **file synchronization**의 의미로, 운영체제에 해당 파일의 변경을 저장 장치에 반영하도록 요청한다. 따라서 `flush()`만으로 장애 복구에 필요한 확정을 대신하지 않는다. 파일 이름을 바꾸거나 지운 결과는 디렉터리 자체의 변경이므로 파일뿐 아니라 부모 디렉터리에도 `fsync()`를 요청한다. 여기서 “확정”은 운영체제·파일시스템·장치가 이 요청을 준수한다는 전제다.
@@ -265,11 +265,13 @@ JSONL 기록 후 날짜 인덱스 실패 시 슬롯은 아직 바꾸지 않아 �
 
 시작 시 순서: 기존 compact 복구 → 기존 import 전체 rollback → 단일 슬롯 undo → 기존 부분 슬롯 정리 → 날짜 WAL redo/메타데이터 검사/필요 시 재생성 → 기존 카테고리 초기화다. import와 compact의 기존 완료 지점·재시작 정책은 유지한다. 카테고리 건수도 기존처럼 장애 시 실제보다 많게만 남긴다.
 
-### 기존 인덱스 마이그레이션
+### 읽을 수 없는 날짜 인덱스 (예전 형식 포함)
 
-기존 12바이트 배열을 발견하면 정확한 원본을 `.legacy.bak.tmp`에 복사·fsync하고 `.legacy.bak`로 rename·디렉터리 fsync한다. 그 다음 살아있는 거래만 idx+JSONL에서 읽어 `.build` B+Tree를 만들고 fsync한 뒤 원래 경로로 원자 교체한다. 이미 있는 최초 백업은 덮어쓰지 않는다.
+예전 정렬 배열 형식은 지원하지 않는다. 시작할 때 날짜 인덱스가 없거나 머리말·파일 크기 검사를 통과하지 못하면, 손상이든 예전 형식이든 구별하지 않고 살아있는 거래만 idx+JSONL에서 읽어 `.build` B+Tree를 만들고 fsync한 뒤 원래 경로로 원자 교체한다. 파일이 있었던 경우에만 `[안내]`로 알린다. 날짜 인덱스는 언제든 원본에서 다시 만들 수 있는 보조 자료라 백업하지 않는다.
 
-백업 또는 빌드 중 실패하면 원래 배열은 그대로다. 교체 전 종료되면 다음 실행에 다시 마이그레이션하고, 교체 후 종료되면 완성된 B+Tree를 사용한다. 이 과정에서는 JSONL·거래번호 인덱스의 바이트나 id를 변경하지 않는다.
+처음 구현은 예전 형식을 크기(12의 배수)와 앞 8바이트로 판별해 원본을 `.legacy.bak`에 보존했다. 그런데 B+Tree 파일도 페이지 수가 3의 배수이면 크기가 12의 배수라, 앞부분이 망가진 B+Tree 파일을 예전 형식으로 오인해 "마이그레이션" 안내와 함께 망가진 바이트를 백업했고, 그 백업은 지우는 곳이 없었다. 예전 형식을 쓰지 않기로 하면서 판별과 백업을 없앴다.
+
+빌드 중 실패하거나 교체 전에 종료되면 원래 파일은 그대로이고 다음 실행에서 다시 만든다. 교체 후 종료되면 완성된 B+Tree를 사용한다. 이 과정에서는 JSONL·거래번호 인덱스의 바이트나 id를 변경하지 않는다.
 
 동일 data-dir의 동시 프로세스 실행은 기존처럼 지원하지 않는다. 복구 보장은 파일시스템이 fsync·원자 rename을 준수한다는 전제다. 실제 매체 고장, 모든 원본 파일의 손상, WAL 도입 전 이미 손상된 거래번호 슬롯은 날짜 인덱스만으로 복구할 수 없다.
 
@@ -339,7 +341,7 @@ JSONL·거래번호 인덱스와 새 슬롯 undo 비용을 모두 포함한다. 
 ## 6. 테스트 실행 결과
 
 수정 전 기존 테스트: **17개 통과** (0.526초).
-현재 실행: **44개 중 43개 통과, 1개 건너뜀** (13.7초). 기존 17개 + B+Tree 13개 + 저장소/마이그레이션/파일 간 복구 14개다. 건너뛴 1개는 10만 번 개별 삽입 테스트로, `BUDGET_SLOW_TESTS=1`을 주면 실행된다(약 108초, 통과).
+현재 실행: **44개 중 43개 통과, 1개 건너뜀** (13.7초). 기존 17개 + B+Tree 13개 + 저장소/재생성/파일 간 복구 14개다. 건너뛴 1개는 10만 번 개별 삽입 테스트로, `BUDGET_SLOW_TESTS=1`을 주면 실행된다(약 108초, 통과).
 `python -m mypy budget_app tests tools`도 오류 없이 통과했다.
 
 ```text
@@ -357,7 +359,7 @@ OK (skipped=1)
 - 큰 import의 일괄 생성 경로: 날짜 인덱스 교체 전·후에 중단해도 목록이 import 전과 같고, 다시 import하면 정상이며 leaf가 꽉 차는지.
 - 256바이트 페이지에서 높이 4 이상 트리: 매 배치마다 자식 키 수·separator·동일 leaf 깊이·페이지 도달성·양방향 링크 검증. 순위 API 및 key-range 결과를 Python bisect/정렬 결과와 대조.
 - 동일 키 재삽입 무변경, 같은 날짜 정렬, 날짜 원복 수정 중복 방지, 빈 범위·최대 날짜·32-bit를 넘는 id·uint64 최댓값 확인.
-- 기존 파일·stale/삭제/고아 항목 마이그레이션, 원본 백업 바이트 동일성, 백업 실패, 교체 전후 중단, 누락/손상 인덱스 재생성 확인.
+- 예전 형식 파일(stale/삭제/고아 항목 포함)을 백업 없이 재생성하고 id·삭제 슬롯 유지, 크기가 12의 배수인 손상 파일을 손상으로 안내, 교체 전후 중단, 누락/손상 인덱스 재생성 확인.
 - CSV 1200행 import/export roundtrip, 잘못된 행 skip, 반복 거래 윤년 말일·재적용, backup 및 compact 검증. 기존 17개 시나리오의 import/compact/recurring 중단 복구 검증도 유지.
 - 실제 별도 Python 프로세스를 `os._exit`로 종료: WAL 임시 저장/publish/페이지 기록/root 기록/data fsync/WAL 제거, root split, 다단계 internal split, 거래 슬롯 커밋 직전. 새 인스턴스에서 복구 결과 확인.
 - 페이지·root torn-write, 손상 WAL·슬롯 undo 체크섬, JSONL 후 날짜 기록 실패, WAL rename 실패, 슬롯 부분 쓰기 및 복구 중 재중단 검증.
