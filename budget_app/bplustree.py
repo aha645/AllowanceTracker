@@ -44,6 +44,10 @@ CRC = struct.Struct("<I")  # 페이지 끝의 CRC32(32비트 순환 중복 검�
 WAL_HEADER = struct.Struct("<8sI16sQQ")  # 44바이트: 서명, 페이지 크기, UUID, 목표 페이지/이미지 수
 PAGE_ID = struct.Struct("<Q")  # WAL 이미지 앞에 붙이는 대상 페이지번호 8바이트
 LEAF, INTERNAL = 1, 2
+# merge 가 메모리에 들고 있을 변경 페이지 수의 상한(4096바이트 페이지면 약 1MiB, 객체로는 약 8MB). 넘으면 그때까지를
+# 먼저 확정한다. 상한이 없으면 큰 import 가 바뀐 페이지를 모두 들고 있어 100만 건에 수백 MB 를 썼다.
+# 확정은 삽입이 끝난 뒤에 확인하므로, 삽입 한 번이 바꾸는 페이지(트리 높이에 비례)만큼은 넘을 수 있다.
+MAX_DIRTY_PAGES = 256
 MAX_ID = (1 << 64) - 1  # Q의 최댓값. Python 정수여도 디스크 필드 범위는 넘을 수 없다.
 MAX_ORDINAL = date.max.toordinal()
 
@@ -584,13 +588,22 @@ class DateIndex:
         fsync_dir(self.path.parent)
 
     def merge(self, entries: Iterable[DateEntry]) -> None:
-        """중복을 제외해 키들을 삽입하고 바뀐 페이지만 한 번의 WAL로 확정한다."""
+        """중복을 제외해 키들을 삽입하고 바뀐 페이지만 WAL로 확정한다.
+
+        바뀐 페이지가 MAX_DIRTY_PAGES 개를 넘으면 그때까지를 WAL 하나로 먼저 확정하고 이어서 넣는다.
+        그래서 날짜 인덱스의 원자성은 그 묶음 단위다. 거래의 완료는 위치 슬롯이 정하고, 슬롯이 없는
+        키는 조회에서 걸러지므로(import 전체 취소도 슬롯 기록이 맡음) 일부 묶음만 확정돼도 안전하다.
+        """
         if not self.path.exists():
             self.rebuild(())
         fp, session = self._open()
         with fp:
             for key in entries:
                 self._insert(session, key)
+                if len(session.dirty) >= MAX_DIRTY_PAGES:
+                    self._commit(session)
+                    # 확정한 페이지는 디스크와 같으므로 놓아준다. 다시 필요하면 파일에서 읽는다.
+                    session.dirty.clear()
             self._commit(session)
             self.last_page_reads = session.reads
 

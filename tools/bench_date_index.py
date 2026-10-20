@@ -115,6 +115,8 @@ def main() -> None:
     parser.add_argument("--sizes", type=int, nargs="+", default=[10000, 100000])
     parser.add_argument("--samples", type=int, default=15)
     parser.add_argument("--out", type=Path, default=ROOT / "doc/bplustree-benchmark.json")
+    # 측정 파일을 둘 폴더. fsync 비용은 파일시스템마다 다르므로 비교할 때는 같은 폴더를 쓴다.
+    parser.add_argument("--tmp-dir", type=Path, default=None, help="임시 측정 폴더(기본: 시스템 임시 폴더)")
     args = parser.parse_args()
     if args.samples < 1 or any(size < args.samples for size in args.sizes):
         parser.error("sizes must be >= samples >= 1")
@@ -123,12 +125,14 @@ def main() -> None:
               "platform": platform.platform(), "seed": 645, "fsync": "enabled, no mocks",
               "timing": "in-process wall time, median, real files; no Python startup/CLI rendering",
               "runs": []}
-    with tempfile.TemporaryDirectory(prefix="allowance-compare-", dir="/workspace/scratch") as temp:
+    runs: list[dict] = []
+    report["runs"] = runs
+    with tempfile.TemporaryDirectory(prefix="allowance-compare-", dir=args.tmp_dir) as temp:
         for size in args.sizes:
             folder = Path(temp) / str(size)
             folder.mkdir()
             result = run(size, args.samples, baseline, folder)
-            report["runs"].append(result)
+            runs.append(result)
             print(json.dumps(result, ensure_ascii=False), flush=True)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

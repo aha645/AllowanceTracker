@@ -76,6 +76,30 @@ class BPlusTreeTests(unittest.TestCase):
             self.assertEqual(list(reopened.iter_range((low, 0), (high, 0))), expected)
             self.assertEqual(list(reopened.iter_range((low, 0), (high, 0), reverse=True)), expected[::-1])
 
+    def test_large_merge_commits_in_bounded_chunks(self) -> None:
+        # 변경 페이지가 상한을 넘으면 묶음마다 먼저 확정해, 큰 import 도 메모리가 묶음 크기로 묶인다
+        index = DateIndex(self.path, 256)
+        index.rebuild([(700000, 1)])
+        rng = random.Random(7)
+        keys = [(700000 + rng.randrange(400), i + 2) for i in range(3000)]
+        commits: list[int] = []
+        original_commit = DateIndex._commit
+
+        def counted(this: DateIndex, session) -> None:  # type: ignore[no-untyped-def]
+            commits.append(len(session.dirty))
+            original_commit(this, session)
+
+        with mock.patch("budget_app.bplustree.MAX_DIRTY_PAGES", 8), \
+                mock.patch.object(DateIndex, "_commit", counted):
+            index.merge(keys)
+        self.assertGreater(len(commits), 1)
+        # 한 번의 삽입이 leaf·새 leaf·이웃 leaf·조상과 그 분할 형제·새 root 까지 바꿀 수 있어
+        # 확정 시점의 변경 페이지는 상한 + (2 x 높이 + 3) 안에 든다
+        height = index.validate()["height"]
+        self.assertLessEqual(max(commits), 8 + 2 * height + 3)
+        self.assertEqual(list(index.iter_range()), sorted(keys + [(700000, 1)]))
+        self.assertFalse(index.wal_path.exists())
+
     def test_100000_individual_inserts_default_pages(self) -> None:
         index = DateIndex(self.path)
         index.rebuild(())

@@ -29,6 +29,7 @@ from __future__ import annotations
 import os
 import shutil
 import struct
+from array import array
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -58,6 +59,33 @@ def entry_key(entry: DateEntry) -> int:
     """
     ordinal, tx_id = entry
     return ordinal << _ID_BITS | tx_id
+
+
+def _sorted_keys(ordinals: array[int], ids: array[int]) -> Iterator[DateEntry]:
+    """import 한 (날짜, id) 를 정렬 순서로 하나씩 낸다.
+
+    B+Tree 에 무작위 순서로 넣으면 키가 곳곳의 leaf 에 흩어져, 변경 페이지 상한(MAX_DIRTY_PAGES)에
+    금방 닿아 자주 확정하고 같은 페이지를 여러 번 다시 쓴다(100만 건 import 가 2배 넘게 느려짐).
+    정렬해서 넣으면 leaf 를 앞에서부터 한 번씩만 지나간다. import 의 id 는 이미 오름차순이고 날짜
+    종류는 많아야 수천 개라, 날짜별로 나누기만 하면 정렬이 끝난다(계수 정렬, 추가 메모리는 id 배열 하나).
+    """
+    counts: dict[int, int] = {}
+    for ordinal in ordinals:
+        counts[ordinal] = counts.get(ordinal, 0) + 1
+    starts: dict[int, int] = {}
+    position = 0
+    for ordinal in sorted(counts):
+        starts[ordinal] = position
+        position += counts[ordinal]
+    placed = array("Q", bytes(8 * len(ids)))
+    cursor = dict(starts)
+    for ordinal, tx_id in zip(ordinals, ids):
+        placed[cursor[ordinal]] = tx_id
+        cursor[ordinal] += 1
+    for ordinal in sorted(counts):
+        start = starts[ordinal]
+        for i in range(start, start + counts[ordinal]):
+            yield ordinal, placed[i]
 
 
 def _fsync_dir(path: Path) -> None:
@@ -318,14 +346,18 @@ class TransactionRepository:
 
         로그 레코드와 인덱스 슬롯은 각각 이어 쓰고, 날짜 페이지 변경은 WAL 하나로 묶는다.
         옛 날짜가 섞여 있어도 행마다 인덱스 파일 전체를 다시 쓰지 않는다.
-        거래 객체 자체는 모으지 않지만 슬롯·키·변경 페이지 메모리는 배치 크기에 비례한다.
+        거래 객체는 모으지 않고, 슬롯과 날짜 키는 건당 16+12바이트 배열에 담는다. 날짜 인덱스의
+        변경 페이지는 DateIndex.merge 가 일정 개수마다 먼저 확정하므로 배치 크기에 비례해 늘지 않는다.
         """
         self.ensure_files()
         next_id = self.index.next_id()
         count = 0
-        # 위치 슬롯은 bytearray, 날짜 항목은 64-bit id를 보존하는 Python 정수 목록에 모은다.
+        # 위치 슬롯은 bytearray, 날짜 항목은 날짜(4바이트)와 id(8바이트) 배열에 따로 모은다.
+        # 64-bit id 를 날짜와 합치면 64비트를 넘어 array 에 못 담고, 정수 리스트는 건당 약 40바이트라
+        # 100만 건 import 가 수백 MB 를 썼다. 따로 담으면 64-bit id 를 지키면서 건당 12바이트다.
         slots = bytearray()
-        keys: list[int] = []
+        ordinals = array("I")
+        ids = array("Q")
         with self.log_path.open("ab") as log:
             log.seek(0, os.SEEK_END)
             offset = log.tell()
@@ -336,14 +368,15 @@ class TransactionRepository:
                 slots += SLOT_STRUCT.pack(offset, offset + len(payload))
                 offset += len(payload) + 1
                 count += 1
-                keys.append(entry_key((date_ordinal(stored.date), stored.id)))
+                ordinals.append(date_ordinal(stored.date))
+                ids.append(stored.id)
             log.flush()
             os.fsync(log.fileno())
         if not count:
             return 0
         # append_transaction() 과 같은 이유로 날짜 항목을 슬롯보다 먼저 쓴다. 슬롯 묶음을 쓰기 전에
         # 꺼지면 import 한 거래 전체가 슬롯 범위 밖이 되어, 반쯤 보이는 상태 없이 통째로 없던 일이 된다.
-        self.date_index.merge_keys(keys)
+        self.date_index.merge_keys(entry_key(key) for key in _sorted_keys(ordinals, ids))
         # 슬롯 묶음은 크기가 커서 쓰는 도중 꺼지면 앞쪽 슬롯만 남아 일부 행만 들어간 상태가 될 수 있다.
         # 그래서 쓰기 전 크기를 기록해 두고, 다 쓴 뒤 그 기록을 지우는 순간을 import 완료로 삼는다.
         # 기록이 남아 있으면 다음 실행 때 _recover_interrupted_import() 가 그 크기로 잘라 import 전체를 취소한다.
