@@ -5,6 +5,9 @@
 
     python tools/bench_large.py            # 10만 건
     python tools/bench_large.py --n 300000 # 건수 지정
+    python tools/bench_large.py --app-dir ../AllowanceTracker-main  # 다른 폴더의 budget_app 을 측정
+
+--app-dir 로 다른 버전(예: git worktree 로 꺼낸 main)을 같은 스크립트·같은 데이터로 잴 수 있다.
 """
 
 from __future__ import annotations
@@ -28,11 +31,12 @@ FIRST_DAY = date(2020, 1, 1)
 DAYS = (date(2024, 12, 31) - FIRST_DAY).days + 1  # 5년
 
 
-def run(data_dir: Path, *args: str) -> tuple[float, float, int]:
+def run(app_dir: Path, data_dir: Path, *args: str) -> tuple[float, float, int]:
     """명령 하나를 새 프로세스로 실행하고 (초, 최대 RSS MB, 종료 코드)를 돌려준다."""
     cmd = [sys.executable, "-m", "budget_app", "--data-dir", str(data_dir), *args]
     start = time.perf_counter()
-    proc = subprocess.Popen(cmd, cwd=PROJECT_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    # python -m 은 현재 폴더의 budget_app 을 먼저 찾으므로, cwd 가 곧 측정할 버전이다.
+    proc = subprocess.Popen(cmd, cwd=app_dir, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     # os.wait4 는 그 자식 하나의 자원 사용량을 준다(RUSAGE_CHILDREN 은 자식 전체의 최댓값이라 못 씀).
     _, status, usage = os.wait4(proc.pid, 0)
     elapsed = time.perf_counter() - start
@@ -59,15 +63,20 @@ def write_csv(path: Path, n: int) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--n", type=int, default=100_000, help="생성할 거래 수(기본 100000)")
+    parser.add_argument("--app-dir", type=Path, default=PROJECT_ROOT,
+                        help="측정할 budget_app 이 든 프로젝트 폴더(기본: 이 스크립트의 프로젝트)")
     args = parser.parse_args()
+    app_dir = args.app_dir.resolve()
+    if not (app_dir / "budget_app" / "__main__.py").exists():
+        parser.error(f"{app_dir} 에 budget_app 이 없습니다")
 
     work = Path(tempfile.mkdtemp(prefix="budget_bench_"))
     data_dir = work / "data"
     csv_path = work / "bulk.csv"
     try:
-        base_time, base_rss, _ = run(data_dir, "category", "list")
+        base_time, base_rss, _ = run(app_dir, data_dir, "category", "list")
         for name in [*CATEGORIES, UNUSED_CATEGORY]:
-            run(data_dir, "category", "add", "--name", name)
+            run(app_dir, data_dir, "category", "add", "--name", name)
         write_csv(csv_path, args.n)
 
         cases = [
@@ -79,16 +88,16 @@ def main() -> int:
             ("search --q 없는말 (기간 없음, 전체 훑기)", ["search", "--q", "없는말"]),
             ("export 전체 기간", ["export", "--out", str(work / "out.csv"), "--from", "2020-01-01", "--to", "2024-12-31"]),
             ("add 최신 날짜 (끝에 추가)", ["add", "--date", "2025-01-01", "--type", "expense", "--category", "식비", "--amount", "1000"]),
-            ("add 옛 날짜 (날짜 인덱스 재작성)", ["add", "--date", "2020-01-01", "--type", "expense", "--category", "식비", "--amount", "1000"]),
+            ("add 옛 날짜 (중간에 끼워 넣기)", ["add", "--date", "2020-01-01", "--type", "expense", "--category", "식비", "--amount", "1000"]),
             ("category remove 미사용", ["category", "remove", "--name", UNUSED_CATEGORY]),
             ("compact", ["compact"]),
         ]
-        print(f"N = {args.n:,}건, Python {sys.version.split()[0]}, {sys.platform}")
+        print(f"N = {args.n:,}건, Python {sys.version.split()[0]}, {sys.platform}, 측정 대상 {app_dir}")
         print(f"기준선(빈 저장소 category list): {base_time:.2f}s, {base_rss:.0f}MB\n")
         print("| 명령 | 시간 | 최대 메모리 |")
         print("|---|---:|---:|")
         for label, cmd in cases:
-            elapsed, rss, code = run(data_dir, *cmd)
+            elapsed, rss, code = run(app_dir, data_dir, *cmd)
             mark = "" if code == 0 else f" (종료 코드 {code})"
             print(f"| `{label}` | {elapsed:.2f}s | {rss:.0f}MB{mark} |")
 
