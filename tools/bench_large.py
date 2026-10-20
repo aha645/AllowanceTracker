@@ -79,7 +79,7 @@ def main() -> int:
             ("search --q 없는말 (기간 없음, 전체 훑기)", ["search", "--q", "없는말"]),
             ("export 전체 기간", ["export", "--out", str(work / "out.csv"), "--from", "2020-01-01", "--to", "2024-12-31"]),
             ("add 최신 날짜 (끝에 추가)", ["add", "--date", "2025-01-01", "--type", "expense", "--category", "식비", "--amount", "1000"]),
-            ("add 옛 날짜 (날짜 인덱스 재작성)", ["add", "--date", "2020-01-01", "--type", "expense", "--category", "식비", "--amount", "1000"]),
+            ("add 옛 날짜 (B+Tree 삽입)", ["add", "--date", "2020-01-01", "--type", "expense", "--category", "식비", "--amount", "1000"]),
             ("category remove 미사용", ["category", "remove", "--name", UNUSED_CATEGORY]),
             ("compact", ["compact"]),
         ]

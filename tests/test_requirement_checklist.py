@@ -63,7 +63,8 @@ if _PROJECT_ROOT not in sys.path:
 from budget_app import repository
 from budget_app.cli import main
 from budget_app.commands.transaction import cmd_add
-from budget_app.repository import DATE_ENTRY_STRUCT, DateIndex, TransactionRepository
+from budget_app.repository import DateIndex, TransactionRepository
+from budget_app.bplustree import PAGE_SIZE
 from budget_app.stores import CategoryStore, RecurringStore
 
 
@@ -741,17 +742,19 @@ class RequirementChecklistTestCase(unittest.TestCase):
             self.assertEqual(self.run_cli("list", "--limit", "2")[0], 0)
         self.assertEqual(len(reads), 2)
 
-        # compact 후에도 순서 유지 + 날짜 인덱스 정리(항목당 12바이트)
+        # compact 후에도 순서 유지 + 페이지 B+Tree에서 stale 항목 정리
         before = self._listed_ids()
         self.assertEqual(self.run_cli("compact")[0], 0)
         self.assertEqual(self._listed_ids(), before)
         date_idx = self.data_dir / "transactions.date.idx"
-        self.assertEqual(date_idx.stat().st_size, len(before) * 12)
+        self.assertEqual(DateIndex(date_idx).validate()["entries"], len(before))
+        self.assertEqual(date_idx.stat().st_size % PAGE_SIZE, 0)
 
         # 날짜 인덱스 파일이 없어도 다음 실행에서 자동 재생성된다
         date_idx.unlink()
         self.assertEqual(self._listed_ids(), before)
-        self.assertEqual(date_idx.stat().st_size, len(before) * 12)
+        self.assertEqual(DateIndex(date_idx).validate()["entries"], len(before))
+        self.assertEqual(date_idx.stat().st_size % PAGE_SIZE, 0)
 
         # 날짜 항목을 쓴 직후(슬롯을 쓰기 전) 중단돼도 목록과 id 조회가 서로 맞는다
         def stop_after(original):  # type: ignore[no-untyped-def]
@@ -799,9 +802,21 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(self._listed_ids(), order)  # 수정 전 날짜 위치에 그대로 한 번
 
         # id 0 항목처럼 생길 수 없는 손상은 조용히 건너뛰지 않고 compact 를 안내한다
-        good = date_idx.read_bytes()
-        ordinal, _ = DATE_ENTRY_STRUCT.unpack(good[-12:])
-        date_idx.write_bytes(good[:-12] + DATE_ENTRY_STRUCT.pack(ordinal, 0))
+        def corrupt_last_id(tx_id):  # type: ignore[no-untyped-def]
+            # Recompute CRC deliberately: test semantic corruption, not torn-page detection.
+            index = DateIndex(date_idx)
+            fp, session = index._open()
+            with fp:
+                leaf = session.read(session.meta.last)
+                ordinal, _ = leaf.keys[-1]
+                leaf.keys[-1] = (ordinal, tx_id)
+                image = leaf.encode(session.meta)
+                offset = leaf.page_id * session.meta.page_size
+            with date_idx.open("r+b") as dst:
+                dst.seek(offset)
+                dst.write(image)
+
+        corrupt_last_id(0)
         code, _, err = self.run_cli("list", "--all")
         self.assertEqual(code, 1)
         self.assertIn("[오류] 날짜 인덱스", err)
@@ -810,10 +825,8 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(self._listed_ids(), order)
 
         # 날짜 항목이 다른 거래를 가리키게 손상되면(읽는 중엔 옛 항목과 구분 불가) list 가 건수로 알아챈다
-        good = date_idx.read_bytes()
-        last_ordinal, _ = DATE_ENTRY_STRUCT.unpack(good[-12:])
-        _, other_id = DATE_ENTRY_STRUCT.unpack(good[:12])
-        date_idx.write_bytes(good[:-12] + DATE_ENTRY_STRUCT.pack(last_ordinal, other_id))
+        _, other_id = next(DateIndex(date_idx).iter_range())
+        corrupt_last_id(other_id)
         code, out, _ = self.run_cli("list", "--all")
         self.assertEqual(code, 0)
         self.assertIn("[경고] 날짜 인덱스와 저장된 거래 수가 맞지 않습니다", out)

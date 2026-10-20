@@ -1,5 +1,7 @@
 # AllowanceTracker — 콘솔 가계부 (`budget_app`)
 
+날짜 인덱스는 이제 **4096바이트 디스크 B+Tree + 페이지 WAL**입니다. 기존 정렬 배열은 최초 실행 때 원본 `.legacy.bak`를 보존하고 자동 마이그레이션합니다. JSONL, 16바이트 거래번호 슬롯, 기존 id와 CLI는 유지합니다. [구현·복구·테스트·성능 보고서](doc/bplustree-report.md), [구현 전 분석 및 설계](doc/bplustree-design.md)를 참고하세요.
+
 표준 라이브러리만 사용하는 CLI 가계부입니다. 거래를 기록/검색/수정/삭제하고, 월별 요약과 예산 사용률을 확인하며, CSV 로 주고받을 수 있습니다.
 (요구사항 원문: [`doc/request.md`](doc/request.md))
 
@@ -22,7 +24,9 @@ data/
 ├── categories.jsonl         등록한 카테고리 목록과 카테고리별 사용 건수                   [필수 3종]
 ├── budgets.jsonl            월별 예산                                                     [필수 3종]
 ├── transactions.idx         거래 id → jsonl 안의 위치 (조회·수정·삭제용 색인)
-├── transactions.date.idx    (거래일자, id) 날짜순 목록 (최신순·기간 조회용 색인)
+├── transactions.date.idx    (거래일자, id) 디스크 B+Tree (기본 4096바이트 페이지)
+├── transactions.date.idx.wal 페이지 갱신 중에만 존재하는 redo WAL
+├── transactions.idx.slot-undo 단일 슬롯 갱신 중에만 존재하는 undo 기록
 ├── recurring.jsonl          반복 거래 규칙 (보너스)
 └── backup/                  `backup` 명령을 실행하면 생기는 타임스탬프 백업 폴더 (보너스)
 ```
@@ -32,7 +36,7 @@ data/
 ### 테스트 실행
 
 ```bash
-python -m unittest discover -s tests -v    # 전체 17개 (1초 안팎)
+python -m unittest discover -s tests -v    # 기존 17개 + B+Tree/복구/10만 건 검증
 
 # 090(import) 까지만: 000 부터 그 번호까지 함께 지정 (-k 는 이름에 그 글자가 든 테스트를 고름)
 python -m unittest tests.test_requirement_checklist -v -k 000 -k 010 -k 020 -k 030 -k 040 -k 050 -k 060 -k 070 -k 080 -k 090
@@ -818,7 +822,10 @@ transactions.jsonl
 |---|---|---|
 | `transactions.jsonl` | 거래 **내용** 원본 (JSON 1줄 = 1건) | 항상 끝에만 추가 (수정 전 내용도 남음) |
 | `transactions.idx` | **id → 현재 내용의 위치** (슬롯 N = id N, 삭제는 `(0, 0)`, 슬롯당 16바이트) | 슬롯 덮어쓰기 |
-| `transactions.date.idx` | **(거래일자, id) 날짜순 목록** (항목당 12바이트) — 최신순·기간 조회용 | 끝에 추가 또는 병합 후 교체 |
+| `transactions.date.idx` | **(거래일자, id) B+Tree** — 4096바이트 페이지, leaf 키 12바이트 | 변경 페이지만 WAL 후 갱신 |
+| `transactions.date.idx.wal` | 변경 페이지 전체 이미지와 SHA-256 | 복구 시 redo, 완료 후 삭제 |
+| `transactions.idx.slot-undo` | 단일 슬롯의 이전 16바이트와 이전 파일 길이 | 복구 시 undo, 완료 후 삭제 |
+| `transactions.date.idx.legacy.bak` | 최초 마이그레이션 이전 정렬 배열 원본 | 마이그레이션 시 한 번 보존 |
 | `categories.jsonl` · `budgets.jsonl` | 카테고리와 **사용 건수** / 월별 예산 | 전체 재작성 (임시파일 + `os.replace`) |
 | `recurring.jsonl` | 반복 거래 규칙 (보너스) | 전체 재작성 (임시파일 + `os.replace`) |
 | `backup/` | `backup` 명령이 만드는 백업 | 타임스탬프 폴더 |
@@ -870,22 +877,22 @@ $ head -n 2 data/transactions.jsonl data/categories.jsonl data/budgets.jsonl
 ### 최신 거래의 기준
 
 최신은 **`(거래일자, id)`** 로 정합니다. 거래일자가 늦은 것이 최신이고, 같은 날짜면 id 가 큰(나중에 등록한) 것이 최신입니다.
-`list` 는 날짜순 목록(`transactions.date.idx`)을 **맨 끝부터 거꾸로** 읽으며 해당 거래만 `jsonl` 에서 읽다가 `--limit` 에서 멈춥니다(제너레이터, 전체를 읽지 않음).
+`list` 는 B+Tree의 마지막 leaf 또는 범위 경계 leaf부터 **앞쪽 leaf 링크로 이동**하며 해당 거래만 `jsonl`에서 읽다가 `--limit`에서 멈춥니다(제너레이터). 오름차순과 역순 키 범위 스캔도 지원합니다.
 옛 날짜 거래를 나중에 가져와도 id 만 커질 뿐 날짜순 목록에서는 제 날짜 위치에 들어가므로 목록 순서가 어긋나지 않습니다.
 
 ### 동작별로 파일이 바뀌는 방식
 
 | 동작 | `transactions.jsonl` | `transactions.idx` | `transactions.date.idx` |
 |---|---|---|---|
-| **add** | 끝에 한 줄 추가 | 슬롯 추가 | 날짜가 가장 늦으면 끝에 추가, 아니면 제 위치에 끼워 넣기 |
-| **import** | 유효한 행을 한 번에 끝에 추가 | 슬롯을 한 번에 추가 | 새 항목을 정렬해 한 번에 병합 |
+| **add** | 끝에 한 줄 추가 | undo 기록 후 슬롯 추가 | O(log N) 탐색·삽입·필요한 페이지 분할 |
+| **import** | 유효한 행을 한 번에 끝에 추가 | 기존 import 기록 후 슬롯을 한 번에 추가 | 페이지 변경을 하나의 WAL로 묶음 저장 |
 | **update** | 수정본 전체를 끝에 추가 (옛 줄은 남음) | 그 id 슬롯을 새 위치로 덮어씀 | 날짜가 바뀐 경우에만 새 항목 추가 (옛 항목은 읽을 때 무시) |
 | **delete** | 변화 없음 | 그 id 슬롯을 `(0, 0)` 으로 | 변화 없음 (삭제된 슬롯은 읽을 때 무시) |
 | **compact** | 살아있는 최신본만 새 파일로 옮겨 씀 | 슬롯 번호 그대로, 위치만 갱신 | 살아있는 거래로 처음부터 다시 만듦 |
 
 - update·delete 로 남은 옛 줄과 옛 항목은 읽을 때 건너뛰고, `python -m budget_app compact` 가 정리합니다. **id 는 바뀌지 않고** 삭제된 번호는 재사용되지 않습니다.
-- `transactions.date.idx` 는 `jsonl`/`idx` 에서 언제든 다시 만들 수 있어서, 없거나 손상되면 다음 실행 때 자동으로 재생성됩니다.
-- 쓰는 순서는 `jsonl`(내용) → `transactions.date.idx`(날짜 항목) → `transactions.idx`(위치) 이고, **위치를 쓰는 순간이 저장 완료**입니다. 그 전에 꺼지면 날짜 항목만 남는데, 아직 위치가 없는 id 라서 읽을 때 건너뛰고 그 id 는 다음 저장 때 다시 쓰입니다. 그래서 저장된 거래가 목록·요약에서만 빠지는 일이 없습니다.
+- `transactions.date.idx`는 `jsonl`/`idx`에서 다시 만들 수 있습니다. WAL이 남으면 재적용하고, 누락·메타데이터 손상은 자동 재생성합니다. 조회 중 발견한 leaf 손상은 오류와 `compact` 안내를 냅니다.
+- 쓰는 순서는 JSONL fsync → 날짜 B+Tree WAL 및 페이지 fsync → 슬롯 undo 기록 확정 → 거래번호 슬롯 fsync → undo 기록 삭제·디렉터리 fsync입니다. **단일 거래는 undo 기록 삭제를 확정하면 완료**입니다. 그 전에 꺼지면 슬롯을 이전 상태로 복구하고 커밋 전 날짜 항목은 조회에서 제외합니다. import는 기존 `.import-pending` 삭제가 완료 시점입니다.
 - id 0 처럼 정상적으로 생길 수 없는 날짜 항목을 만나면 건너뛰지 않고 `[오류]` 와 함께 `compact`(날짜 인덱스 재생성)를 안내합니다.
 - 디스크 오류나 직접 편집으로 날짜 항목이 **다른 거래를 가리키게** 손상되면, 읽는 중에는 수정 전 옛 항목과 구분할 수 없어 그 거래가 목록에서 빠집니다. 대신 `list` 가 끝까지 읽었을 때(`--all` 이거나 `--limit` 에 닿지 않음) 출력 건수가 저장된 거래 수와 다르면 `[경고]` 와 함께 `compact` 를 안내합니다.
 - `add`/`import` 가 위치(`transactions.idx`)를 쓰다 꺼져 끝에 16바이트가 안 되는 조각이 남으면, 다음 실행 때 잘라 내고 `[안내]` 로 알립니다. 그 거래는 저장되지 않은 것이고, 남은 `jsonl` 줄과 날짜 항목은 위처럼 건너뛰다가 `compact` 때 정리됩니다.
@@ -895,6 +902,8 @@ $ head -n 2 data/transactions.jsonl data/categories.jsonl data/budgets.jsonl
 - 한계: 위 건수 검사는 `list` 에만 있어서, `search`/`summary`/`export` 는 손상된 상태에서도 경고 없이 빠진 결과를 냅니다(`compact` 로 복구). `transactions.idx` 는 삭제해도 줄지 않으며, 같은 `--data-dir` 의 동시 실행은 고려하지 않았습니다(1인 사용 전제).
 
 ## 5. 대용량(10만 건 이상) 데이터 테스트
+
+아래 기존 측정표와 개선안은 **Sorted Array 버전의 이력**입니다. 현재 B+Tree와 원본의 동일 조건 비교는 [새 보고서](doc/bplustree-report.md)의 성능 표를 참고하세요.
 
 ### 실행 방법
 
@@ -967,6 +976,8 @@ python tools/bench_large.py --n 300000   # 건수 지정 (100만 건은 몇 분 
 3. ⑤, ③, ②의 순차 읽기, ①·④의 외부 정렬은 100만 건 이상을 자주 다룰 때 적용합니다.
 
 ## 6. 작업 도중 전원이 꺼지면 — 명령별 복구 방식
+
+이 절은 **기존 Sorted Array 버전의 복구 설계 기록**입니다. 현재 단일 거래의 완료 시점은 슬롯 undo 기록 삭제 확정이며, 날짜 인덱스의 파일 형식·복구는 페이지 WAL 방식입니다. 현재 버전의 정확한 복구 순서와 장애별 결과는 [B+Tree 보고서](doc/bplustree-report.md)의 복구 절에 정리했습니다. 기존 import·compact·카테고리·recurring의 복구 정책은 유지합니다.
 
 ### 먼저 알아 둘 세 가지 원칙
 
