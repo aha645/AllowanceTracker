@@ -90,7 +90,7 @@ def run(size: int, samples: int, baseline: types.ModuleType, folder: Path) -> di
             "date_index_bytes": repo.date_idx_path.stat().st_size,
         }
         index = index_type(folder / f"{label}-only.idx")
-        index.rebuild(keys)
+        index.rebuild(sorted(keys))
         def index_query(i: int) -> None:
             if label == "bplustree":
                 actual = list(index.iter_range((low, 0), (high, 0), reverse=True))

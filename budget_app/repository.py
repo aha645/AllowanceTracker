@@ -62,12 +62,13 @@ def entry_key(entry: DateEntry) -> int:
 
 
 def _sorted_keys(ordinals: array[int], ids: array[int]) -> Iterator[DateEntry]:
-    """import 한 (날짜, id) 를 정렬 순서로 하나씩 낸다.
+    """id 오름차순으로 모은 (날짜, id) 를 정렬 순서로 하나씩 낸다(import 와 날짜 인덱스 재생성 용).
 
     B+Tree 에 무작위 순서로 넣으면 키가 곳곳의 leaf 에 흩어져, 변경 페이지 상한(MAX_DIRTY_PAGES)에
     금방 닿아 자주 확정하고 같은 페이지를 여러 번 다시 쓴다(100만 건 import 가 2배 넘게 느려짐).
-    정렬해서 넣으면 leaf 를 앞에서부터 한 번씩만 지나간다. import 의 id 는 이미 오름차순이고 날짜
-    종류는 많아야 수천 개라, 날짜별로 나누기만 하면 정렬이 끝난다(계수 정렬, 추가 메모리는 id 배열 하나).
+    정렬해서 넣으면 leaf 를 앞에서부터 한 번씩만 지나가고, 재생성(DateIndex.rebuild)은 정렬된 키를 요구한다.
+    id 는 이미 오름차순이고 날짜 종류는 많아야 수천 개라, 날짜별로 나누기만 하면 정렬이 끝난다(계수 정렬,
+    추가 메모리는 id 배열 하나).
     """
     counts: dict[int, int] = {}
     for ordinal in ordinals:
@@ -305,7 +306,13 @@ class TransactionRepository:
 
     def rebuild_date_index(self) -> None:
         """transactions.jsonl/idx 로부터 날짜 인덱스를 처음부터 다시 만든다."""
-        self.date_index.rebuild(self._live_date_entries())
+        # 재생성은 정렬된 키로 leaf 를 꽉 채워 쓴다. 키는 import 와 같이 건당 12바이트 배열에 모아 정렬한다.
+        ordinals = array("I")
+        ids = array("Q")
+        for ordinal, tx_id in self._live_date_entries():
+            ordinals.append(ordinal)
+            ids.append(tx_id)
+        self.date_index.rebuild(_sorted_keys(ordinals, ids))
 
     # ------------------------------------------------------------------ 쓰기
     def _append_record(self, tx: Transaction) -> tuple[int, int]:
@@ -348,6 +355,7 @@ class TransactionRepository:
         옛 날짜가 섞여 있어도 행마다 인덱스 파일 전체를 다시 쓰지 않는다.
         거래 객체는 모으지 않고, 슬롯과 날짜 키는 건당 16+12바이트 배열에 담는다. 날짜 인덱스의
         변경 페이지는 DateIndex.merge 가 일정 개수마다 먼저 확정하므로 배치 크기에 비례해 늘지 않는다.
+        넣을 건수가 기존 키 이상이면 날짜 인덱스는 삽입 대신 기존 키와 합쳐 새로 만든다(rebuild_merged).
         """
         self.ensure_files()
         next_id = self.index.next_id()
@@ -376,7 +384,12 @@ class TransactionRepository:
             return 0
         # append_transaction() 과 같은 이유로 날짜 항목을 슬롯보다 먼저 쓴다. 슬롯 묶음을 쓰기 전에
         # 꺼지면 import 한 거래 전체가 슬롯 범위 밖이 되어, 반쯤 보이는 상태 없이 통째로 없던 일이 된다.
-        self.date_index.merge_keys(entry_key(key) for key in _sorted_keys(ordinals, ids))
+        if count >= self.date_index.count():
+            # 넣을 건수가 기존 키 이상이면(빈 저장소 포함) 하나씩 삽입하지 않고 기존 키와 합쳐 새로 만든다.
+            # 빠르고 leaf 도 꽉 차며, 교체 전에 꺼지면 원래 날짜 인덱스가 그대로 남는다.
+            self.date_index.rebuild_merged(_sorted_keys(ordinals, ids))
+        else:
+            self.date_index.merge_keys(entry_key(key) for key in _sorted_keys(ordinals, ids))
         # 슬롯 묶음은 크기가 커서 쓰는 도중 꺼지면 앞쪽 슬롯만 남아 일부 행만 들어간 상태가 될 수 있다.
         # 그래서 쓰기 전 크기를 기록해 두고, 다 쓴 뒤 그 기록을 지우는 순간을 import 완료로 삼는다.
         # 기록이 남아 있으면 다음 실행 때 _recover_interrupted_import() 가 그 크기로 잘라 import 전체를 취소한다.

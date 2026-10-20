@@ -46,6 +46,29 @@ class BPlusTreeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             DateIndex(self.path, 300)
 
+    def test_rebuild_and_sorted_appends_fill_leaves(self) -> None:
+        index = DateIndex(self.path, 256)  # leaf 18키, internal 자식 8개
+        for n in [1, 18, 19, 18 * 8 + 1, 3000]:
+            with self.subTest(n=n):
+                keys = [(700000 + i // 5, i + 1) for i in range(n)]
+                index.rebuild(keys + keys[-1:])  # 같은 키는 한 번만 둔다
+                info = index.validate()
+                self.assertEqual(list(index.iter_range()), keys)
+                self.assertEqual(info["leaves"], -(-n // 18))
+        # 날짜순으로 이어 붙이면 왼쪽 leaf 를 꽉 찬 채로 두고 나눈다(반반이면 leaf 가 두 배 가까이 된다).
+        index.rebuild(())
+        keys = [(700000 + i // 5, i + 1) for i in range(3000)]
+        for offset in range(0, len(keys), 100):
+            index.merge(keys[offset:offset + 100])
+        self.assertEqual(list(index.iter_range()), keys)
+        self.assertEqual(index.validate()["leaves"], -(-3000 // 18))
+        index.rebuild_merged([(699999, 9000), keys[0], (800000, 9001)])
+        self.assertEqual(list(index.iter_range()), [(699999, 9000), *keys, (800000, 9001)])
+        before = self.path.read_bytes()
+        with self.assertRaises(ValueError):
+            index.rebuild([(700001, 1), (700000, 2)])
+        self.assertEqual(self.path.read_bytes(), before)
+
     def test_randomized_multilevel_splits_rank_and_links(self) -> None:
         index = DateIndex(self.path, 256)
         index.rebuild(())

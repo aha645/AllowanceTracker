@@ -132,6 +132,35 @@ class RepositoryBPlusTreeTests(unittest.TestCase):
                 self.assertEqual(self.listing(), expected)
                 self.assertEqual((self.folder / "transactions.date.idx.legacy.bak").read_bytes(), legacy)
 
+    def test_large_import_rebuilds_merged_index_and_survives_interruption(self) -> None:
+        # 넣을 건수가 기존 키 이상이면 삽입 대신 기존 키와 합쳐 새로 만든다(rebuild_merged).
+        self.repo.append_transactions([tx("2024-01-15"), tx("2023-01-01")])
+        self.repo.update_transaction(self.repo.get_transaction(1).replace_fields(date="2022-06-01"))
+        expected = self.listing(self.repo)
+        rows = [tx(f"2023-{1 + i % 12:02d}-{1 + i % 28:02d}", i + 1) for i in range(400)]
+        for when in ["before", "after"]:
+            with self.subTest(when=when):
+                real_replace = os.replace
+                def stop(src, dst):
+                    if Path(src).name == "transactions.date.idx.build":
+                        if when == "after":
+                            real_replace(src, dst)  # 교체는 됐지만 슬롯을 쓰기 전에 멈춘 경우
+                        raise KeyboardInterrupt
+                    return real_replace(src, dst)
+                repo = self.open_repo()
+                with mock.patch("budget_app.bplustree.os.replace", side_effect=stop), \
+                     mock.patch.object(DateIndex, "merge", side_effect=AssertionError("삽입 경로를 타면 안 됨")), \
+                     self.assertRaises(KeyboardInterrupt):
+                    repo.append_transactions(rows)
+                self.assertEqual(self.listing(), expected)
+        repo = self.open_repo()
+        self.assertEqual(repo.append_transactions(rows), 400)
+        self.assertEqual(self.listing(repo), sorted(expected + [(row.date, 3 + i, i + 1) for i, row in enumerate(rows)],
+                                                    reverse=True))
+        info = repo.date_index.validate()
+        # 옛 날짜 키와 중단된 import 의 키는 남아 있어도 leaf 는 꽉 차 있다(256바이트가 아닌 4096바이트 페이지).
+        self.assertEqual(info["leaves"], -(-info["entries"] // 338))
+
     def test_missing_truncated_metadata_and_corrupt_wal_rebuilt_from_authority(self) -> None:
         self.repo.append_transactions([tx(), tx("2023-01-01"), tx("2025-01-01")])
         self.repo.delete_transaction(2)

@@ -13,6 +13,7 @@ WAL(Write-Ahead Log, 선행 기록 로그)에 변경 후 페이지를 먼저 확
 from __future__ import annotations
 
 import hashlib
+import heapq
 import os
 import struct
 import uuid
@@ -489,9 +490,11 @@ class DateIndex:
         branch_cap = (session.meta.page_size - PAGE_HEADER.size - 4 - CHILD.size) // BRANCH.size
         split: tuple[DateEntry, _Page] | None = None
         if len(page.keys) > leaf_cap:
-            # leaf split: 왼쪽은 작은 절반, 새 오른쪽은 큰 절반을 보관한다.
+            # leaf split: 보통은 왼쪽이 작은 절반, 새 오른쪽이 큰 절반을 보관한다.
+            # 맨 끝에 붙인 키로 넘쳤으면(최신 날짜 add, 정렬해서 넣는 import) 왼쪽은 꽉 찬 채로 두고
+            # 새 키만 옮긴다. 반반으로 나누면 다음 키도 오른쪽에만 쌓여 왼쪽 절반이 영영 비어 있다.
             right = session.new(True)
-            mid = len(page.keys) // 2
+            mid = len(page.keys) - 1 if pos == len(page.keys) - 1 else len(page.keys) // 2
             right.keys, page.keys = page.keys[mid:], page.keys[:mid]
             right.prev, right.next = page.page_id, page.next
             if page.next:
@@ -508,6 +511,8 @@ class DateIndex:
             # 가장 가까운 부모부터 거슬러 올라가 자식 키 수와 새 분기를 반영한다.
             parent, child_pos = path.pop()
             parent.counts[child_pos] = page.count
+            # 맨 오른쪽 자식이 나뉘었는지. leaf 와 같은 이유로 이때는 부모도 한쪽으로 몰아 나눈다.
+            tail = split is not None and child_pos == len(parent.children) - 1
             if split is not None:
                 separator, right = split
                 parent.keys.insert(child_pos, separator)
@@ -518,7 +523,8 @@ class DateIndex:
             if len(parent.keys) > branch_cap:
                 # internal split: 가운데 키는 부모로 '승격'하고 좌우 노드에서는 뺀다.
                 # 키를 나눌 때는 자식이 항상 키보다 하나 많다는 관계도 함께 유지한다.
-                mid = len(parent.keys) // 2
+                # 맨 끝으로 몰 때도 오른쪽에 분기 키 하나(자식 둘)는 남긴다. 분기 키 0개인 internal 은 없다.
+                mid = len(parent.keys) - 2 if tail else len(parent.keys) // 2
                 separator = parent.keys[mid]
                 right = session.new(False)
                 right.keys, parent.keys = parent.keys[mid + 1:], parent.keys[:mid]
@@ -613,25 +619,19 @@ class DateIndex:
         self.merge((key >> 64, key & MAX_ID) for key in keys)
 
     def rebuild(self, entries: Iterable[DateEntry]) -> None:
-        """옆의 임시 파일에 새 트리를 완성·fsync한 뒤 원래 이름으로 교체한다.
+        """정렬된 키로 옆의 임시 파일에 새 트리를 완성·fsync한 뒤 원래 이름으로 교체한다.
 
-        중간에 실패하면 원래 인덱스는 유지된다. legacy 원본 백업은 저장소가 먼저 한다.
-        재생성한 파일에는 새 UUID를 부여해 이전 파일의 WAL과 구별한다.
+        entries 는 오름차순이어야 한다(같은 키는 한 번만 둔다). 키를 하나씩 삽입하지 않고 leaf 를 왼쪽부터
+        꽉 채워 쓴 다음 그 위층을 아래에서부터 쌓는다(_bulk_load). 중간에 실패하면 원래 인덱스는 유지된다.
+        legacy 원본 백업은 저장소가 먼저 한다. 재생성한 파일에는 새 UUID를 부여해 이전 파일의 WAL과 구별한다.
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(self.path.name + ".build")
         meta = _Meta(self.page_size, uuid.uuid4().bytes)
         with tmp.open("w+b") as fp:
-            fp.write(meta.encode())
-            fp.write(_Page(1, True).encode(meta))
-            session = _Session(fp, meta)
-            for key in entries:
-                self._insert(session, key)
             # 임시 파일은 아직 사용자 인덱스가 아니다. 완성 전까지 기존 파일을 교체하지
             # 않으므로, 이 빌드 자체는 별도 WAL 없이 임시 파일 전체를 완성하면 된다.
-            for page_id, page in session.dirty.items():
-                fp.seek(page_id * meta.page_size)
-                fp.write(page.encode(meta))
+            self._bulk_load(fp, meta, entries)
             fp.seek(0)
             fp.write(meta.encode())
             fp.truncate(meta.pages * meta.page_size)
@@ -644,6 +644,70 @@ class DateIndex:
         self.wal_path.unlink(missing_ok=True)
         self.wal_path.with_name(self.wal_path.name + ".tmp").unlink(missing_ok=True)
         fsync_dir(self.path.parent)
+
+    def rebuild_merged(self, entries: Iterable[DateEntry]) -> None:
+        """지금 들어 있는 키와 정렬된 entries 를 합쳐 rebuild 한다(큰 import 용).
+
+        넣을 키가 많으면 하나씩 삽입해 WAL 로 확정하는 것보다, 두 정렬 목록을 한 번 훑어 새 파일을 만드는
+        편이 빠르고 leaf 도 꽉 찬다. 교체 전에 꺼지면 원래 인덱스가 그대로 남는다.
+        """
+        existing = self.iter_range() if self.path.exists() else iter(())
+        self.rebuild(heapq.merge(existing, entries))
+
+    def _bulk_load(self, fp: BinaryIO, meta: _Meta, entries: Iterable[DateEntry]) -> None:
+        """leaf 를 왼쪽부터 꽉 채워 쓰고, 각 층의 (첫 키, 페이지 번호, 키 수)로 그 위층을 만든다.
+
+        페이지 번호는 leaf 가 1부터 차례로, 그다음 internal 이 아래층부터 붙는다. leaf 의 앞뒤 연결은
+        번호가 연달아 있으므로 바로 정해진다. 메모리에는 쓰고 있는 leaf 하나와 위층 재료만 둔다.
+        """
+        size = meta.page_size
+        leaf_cap = (size - PAGE_HEADER.size - 4) // KEY.size
+        fanout = (size - PAGE_HEADER.size - 4 - CHILD.size) // BRANCH.size + 1  # internal 의 최대 자식 수
+        meta.pages, meta.root, meta.count = 1, 0, 0  # root 는 마지막 층을 만들 때 정해진다
+        level: list[tuple[DateEntry, int, int]] = []  # 위층 재료. leaf 338개당 한 항목이라 작다
+        keys: list[DateEntry] = []
+        previous: DateEntry | None = None
+
+        def write_leaf(last: bool) -> None:
+            page_id = meta.pages
+            meta.pages += 1
+            if last and not level:
+                meta.root = page_id  # leaf 가 하나뿐이면 그 leaf 가 root 다
+            page = _Page(page_id, True, keys, prev=page_id - 1 if level else 0, next=0 if last else page_id + 1)
+            fp.seek(page_id * size)
+            fp.write(page.encode(meta))
+            level.append((keys[0] if keys else (0, 0), page_id, len(keys)))
+
+        for key in entries:
+            if previous is not None and key <= previous:
+                if key == previous:
+                    continue  # 같은 날짜와 같은 거래번호 조합은 한 번만 둔다
+                raise ValueError("rebuild 에는 오름차순으로 정렬된 키를 넘겨야 합니다")
+            _valid_key(key)
+            previous = key
+            if len(keys) == leaf_cap:
+                write_leaf(last=False)  # 다음 키가 있으므로 이 leaf 는 마지막이 아니다
+                keys = []
+            keys.append(key)
+            meta.count += 1
+        write_leaf(last=True)  # 키가 없으면 빈 root leaf 하나가 된다
+        meta.first, meta.last = 1, meta.pages - 1
+        while len(level) > 1:
+            groups = [level[i:i + fanout] for i in range(0, len(level), fanout)]
+            if len(groups[-1]) == 1:
+                # 자식 하나짜리 internal 은 분기 키가 0개라 허용되지 않는다. 앞 묶음에서 하나 가져온다.
+                groups[-1].insert(0, groups[-2].pop())
+            upper: list[tuple[DateEntry, int, int]] = []
+            for group in groups:
+                page = _Page(meta.pages, False, keys=[item[0] for item in group[1:]],
+                             children=[item[1] for item in group], counts=[item[2] for item in group])
+                meta.pages += 1
+                if len(groups) == 1:
+                    meta.root = page.page_id
+                fp.seek(page.page_id * size)
+                fp.write(page.encode(meta))
+                upper.append((group[0][0], page.page_id, page.count))
+            level = upper
 
     def validate(self) -> dict[str, int]:
         """전체 구조를 검사한다. O(N) 점검이므로 평소 단건 검색 때마다 호출하지 않는다."""
