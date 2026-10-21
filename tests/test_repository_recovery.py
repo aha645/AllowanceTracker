@@ -16,7 +16,7 @@ from unittest import mock
 from budget_app.context import AppContext
 from budget_app.durability import SlotUndo
 from budget_app.models import StorageError, Transaction
-from budget_app.repository import SLOT_STRUCT, DateIndex, TransactionRepository
+from budget_app.repository import SLOT_STRUCT, DateIndex, TransactionRepository, date_ordinal
 from budget_app.services import SearchCriteria
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -133,11 +133,11 @@ class RepositoryRecoveryTests(unittest.TestCase):
                 self.assertEqual(self.listing(), expected)
 
     def test_import_date_merge_interrupted_before_and_after_replace(self) -> None:
-        # 기존 마지막 날짜보다 이른 행이 있으면 병합해 임시 파일로 교체한다. 그 앞뒤 어디서 멈춰도 import 전 그대로다.
+        # 기존 마지막 날짜(2023-01-01)보다 이른 행이 있으면 병합해 임시 파일로 교체한다. 그 앞뒤 어디서 멈춰도 import 전 그대로다.
         self.repo.append_transactions([tx("2024-01-15"), tx("2023-01-01")])
         self.repo.update_transaction(self.repo.get_transaction(1).replace_fields(date="2022-06-01"))
         expected = self.listing(self.repo)
-        rows = [tx(f"2023-{1 + i % 12:02d}-{1 + i % 28:02d}", i + 1) for i in range(400)]
+        rows = [tx(f"2022-{1 + i % 12:02d}-{1 + i % 28:02d}", i + 1) for i in range(400)]
         for when in ["before", "after"]:
             with self.subTest(when=when):
                 real_replace = os.replace
@@ -156,8 +156,54 @@ class RepositoryRecoveryTests(unittest.TestCase):
         self.assertEqual(repo.append_transactions(rows), 400)
         self.assertEqual(self.listing(repo), sorted(expected + [(row.date, 3 + i, i + 1) for i, row in enumerate(rows)],
                                                     reverse=True))
-        # 옛 날짜 항목 1개 + 살아있는 2개 + 새 400개. 중단된 import 가 남긴 항목은 같은 id 로 다시 들어와 겹친다.
-        self.assertEqual(repo.date_index.count(), 403)
+        # 살아있는 2개 + 새 400개(예전 날짜 update 가 옛 항목을 지웠다). 중단된 import 가 남긴 항목은 같은 id 로 다시 들어와 겹친다.
+        self.assertEqual(repo.date_index.count(), 402)
+
+    def date_entries(self, repo: TransactionRepository) -> list[tuple[int, int]]:
+        index = repo.date_index
+        return sorted(index.iter_desc(0, index.count()))
+
+    def test_older_date_update_removes_old_entry_newer_date_keeps_it(self) -> None:
+        for day in ["2024-01-10", "2024-01-20", "2024-01-30"]:
+            self.repo.append_transaction(tx(day))
+        live = lambda: sorted((date_ordinal(day), tx_id) for day, tx_id, _ in self.listing(self.repo))  # noqa: E731
+        # 더 예전 날짜로: 날짜 인덱스를 다시 쓰면서 그 id 의 옛 항목도 뺀다 → 살아있는 항목만 남는다
+        self.repo.update_transaction(self.repo.get_transaction(3).replace_fields(date="2024-01-05"))
+        self.assertEqual(self.date_entries(self.repo), live())
+        # 더 최신 날짜로: 끝에 덧붙이기만 하고 옛 항목은 남긴다(목록에는 한 번만 나온다)
+        self.repo.update_transaction(self.repo.get_transaction(1).replace_fields(date="2025-01-01"))
+        self.assertEqual(len(self.date_entries(self.repo)), 4)
+        self.assertIn((date_ordinal("2024-01-10"), 1), self.date_entries(self.repo))
+        self.assertEqual([row[1] for row in self.listing(self.repo)], [1, 2, 3])
+        # 다시 예전 날짜로 바꾸면 그 id 의 남은 옛 항목까지 함께 빠진다
+        self.repo.update_transaction(self.repo.get_transaction(1).replace_fields(date="2024-01-01"))
+        self.assertEqual(self.date_entries(self.repo), live())
+        self.assertEqual([row[1] for row in self.listing(self.repo)], [2, 3, 1])
+
+    def test_crash_after_date_index_rewrite_before_slot_write_restores_both(self) -> None:
+        # 옛 항목을 지운 날짜 인덱스를 쓴 뒤 위치 칸을 쓰기 전에 꺼지면, 위치 칸은 아직 수정 전(옛 날짜)이다.
+        # 다음 실행이 되돌리기 기록을 보고 위치 칸을 되돌리고 날짜 인덱스도 다시 만들어 거래가 빠지지 않는다.
+        self.repo.append_transaction(tx("2024-01-10"))
+        self.repo.append_transaction(tx("2024-01-20"))
+        expected = self.listing(self.repo)
+        script = '''
+import os, sys
+from pathlib import Path
+from budget_app.repository import TransactionIndex, TransactionRepository
+repo = TransactionRepository(Path(sys.argv[1]))
+repo.ensure_files()
+TransactionIndex.write_slot = lambda self, *args: os._exit(76)
+repo.update_transaction(repo.get_transaction(2).replace_fields(date="2023-01-01"))
+'''
+        proc = subprocess.run([sys.executable, "-c", script, str(self.folder)], cwd=ROOT,
+                              capture_output=True, timeout=15)
+        self.assertEqual(proc.returncode, 76, proc.stderr.decode())
+        # 꺼진 직후 날짜 인덱스에는 2번의 옛 항목(2024-01-20)이 없다
+        self.assertNotIn((date_ordinal("2024-01-20"), 2), sorted(DateIndex(self.repo.date_idx_path).iter_desc(0, 2)))
+        reopened = self.open_repo()
+        self.assertEqual(reopened.recovered, ["끝나지 않은 거래 저장의 위치 슬롯을 이전 상태로 복구했습니다."])
+        self.assertEqual(self.listing(reopened), expected)
+        self.assertEqual(self.date_entries(reopened), [(date_ordinal("2024-01-10"), 1), (date_ordinal("2024-01-20"), 2)])
 
     def test_missing_and_truncated_index_rebuilt_from_authority(self) -> None:
         self.repo.append_transactions([tx(), tx("2023-01-01"), tx("2025-01-01")])

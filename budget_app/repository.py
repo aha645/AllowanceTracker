@@ -276,15 +276,17 @@ class DateIndex:
         with self.path.open("rb") as fp:
             return self._read(fp, total - 1)
 
-    def merge(self, entries: Iterable[DateEntry]) -> None:
+    def merge(self, entries: Iterable[DateEntry], drop_id: int | None = None) -> None:
         """새 항목 몇 개를 정렬 상태를 유지하며 끼워 넣는다(add/update 용, 이미 있는 항목은 무시)."""
-        self.merge_keys(sorted({entry_key(e) for e in entries}))
+        self.merge_keys(sorted({entry_key(e) for e in entries}), drop_id)
 
-    def merge_keys(self, keys: Iterable[int]) -> None:
+    def merge_keys(self, keys: Iterable[int], drop_id: int | None = None) -> None:
         """오름차순 `entry_key()` 정수 키를 병합한다(import 는 계수 정렬한 키를 하나씩 넘긴다).
 
         모두 마지막 항목보다 크면(평소 add) 끝에 append 만 한다. 그렇지 않으면(옛 날짜 거래/import)
         기존 파일을 한 번만 훑으며 병합해 임시 파일에 쓰고 os.replace 로 교체한다. O(n+m).
+        `drop_id` 를 주면 파일을 다시 쓸 때 그 id 의 기존 항목을 빼고 쓴다(update 가 옛 날짜 항목을 지울 때).
+        끝에 덧붙이는 경우에는 파일 전체를 다시 쓰지 않으려고 빼지 않는다(읽을 때 건너뛰고 compact 가 정리).
         """
         pending = _unique(keys)
         nxt = next(pending, None)
@@ -310,6 +312,8 @@ class DateIndex:
                     while nxt is not None and nxt < cur_key:
                         out.append(_pack_key(nxt))
                         nxt = next(pending, None)
+                    if cur[1] == drop_id:  # 지울 항목. 같은 키를 새로 넣는 중이면 nxt 가 다음 차례에 쓴다
+                        continue
                     if nxt == cur_key:  # 이미 있는 항목
                         nxt = next(pending, None)
                     out.append(DATE_ENTRY_STRUCT.pack(*cur))
@@ -403,13 +407,19 @@ class TransactionRepository:
         self.index.ensure()
         self._recover_interrupted_import()  # 조각 정리보다 먼저: import 의 조각은 묶음째 잘라 낸다
         # 거래 존재 여부의 기준인 idx를 먼저 바로잡은 다음 날짜 보조 인덱스를 복구한다.
-        if self.slot_undo.recover():
+        # 되돌리기 기록이 남았으면 그 저장은 날짜 인덱스를 고친 뒤 멈췄을 수 있다. update 는 옛 날짜 항목을
+        # 지운 날짜 인덱스를 위치 칸보다 먼저 쓰므로, 위치 칸만 되돌리면 그 거래가 목록에서 빠진다.
+        # 그래서 이때는 날짜 인덱스도 원본에서 다시 만든다(꺼진 뒤 한 번만 드는 O(n) 비용).
+        slot_recovered = self.slot_undo.recover()
+        if slot_recovered:
             self.recovered.append("끝나지 않은 거래 저장의 위치 슬롯을 이전 상태로 복구했습니다.")
         if self.index.drop_partial_slot():
             self.recovered.append("끝나지 않은 마지막 저장(add)의 조각을 정리했습니다. 그 거래는 저장되지 않았습니다.")
         # 날짜 인덱스가 없거나 손상됐으면(크기가 12의 배수가 아님) 원본(idx+jsonl)에서 다시 만든다.
         # 날짜 인덱스는 언제든 다시 만들 수 있는 보조 자료라 따로 백업하지 않는다.
-        if not self.date_index.is_valid():
+        if slot_recovered:
+            self.rebuild_date_index()
+        elif not self.date_index.is_valid():
             damaged = self.date_idx_path.exists()  # 없던 파일(첫 실행)은 조용히 만든다
             self.rebuild_date_index()
             if damaged:
@@ -578,14 +588,14 @@ class TransactionRepository:
                 "list 명령으로 존재하는 id 를 확인하세요.",
             )
         start, end = self._append_record(tx)
-        # 날짜가 바뀌면 새 위치에 항목을 끼워 넣는다(옛 항목은 읽을 때 건너뜀). 슬롯보다 먼저 쓰는
-        # 이유: 그 사이에 꺼져도 슬롯은 아직 수정 전 레코드를 가리키므로, 새 항목은 날짜 불일치로
-        # 건너뛰고 거래는 수정 전 날짜에 한 번만 나온다. 반대 순서면 슬롯은 새 날짜인데 새 날짜 항목이
-        # 없어, 수정한 거래가 목록에서 사라진다.
-        if old.date != tx.date:
-            self.date_index.merge([(date_ordinal(tx.date), tx.id)])
-        # 날짜가 그대로인 금액 수정도 슬롯 위치는 바뀌므로 undo가 필요하다.
+        # 날짜가 그대로인 금액 수정도 슬롯 위치는 바뀌므로 undo가 필요하다. 날짜 인덱스보다 먼저 확정해서,
+        # 날짜 인덱스를 고친 뒤 위치 칸을 쓰기 전에 꺼져도 다음 실행이 이 기록을 보고 둘 다 되돌린다.
         self.slot_undo.prepare(tx.id)
+        # 날짜가 바뀌면 새 날짜 항목을 넣는다(위치 칸보다 먼저 써야 수정한 거래가 목록에서 빠지지 않는다).
+        # 더 예전 날짜로 바꾸면 날짜 인덱스를 어차피 다시 쓰므로 그때 이 id 의 옛 항목도 함께 뺀다.
+        # 더 최신 날짜면 끝에 덧붙이기만 하고 옛 항목은 남긴다(읽을 때 날짜가 안 맞아 건너뜀, compact 가 정리).
+        if old.date != tx.date:
+            self.date_index.merge([(date_ordinal(tx.date), tx.id)], drop_id=tx.id)
         self.index.write_slot(tx.id, start, end)
         self.slot_undo.commit()
         return tx

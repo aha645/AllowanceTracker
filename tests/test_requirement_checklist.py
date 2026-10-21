@@ -755,8 +755,8 @@ class RequirementChecklistTestCase(unittest.TestCase):
 
         # 날짜 항목을 쓴 직후(슬롯을 쓰기 전) 중단돼도 목록과 id 조회가 서로 맞는다
         def stop_after(original):  # type: ignore[no-untyped-def]
-            def wrapper(index, entries):  # type: ignore[no-untyped-def]
-                original(index, entries)
+            def wrapper(index, entries, *args, **kwargs):  # type: ignore[no-untyped-def]
+                original(index, entries, *args, **kwargs)
                 raise KeyboardInterrupt  # 강제 종료 흉내
             return wrapper
 
