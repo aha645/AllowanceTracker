@@ -1,5 +1,12 @@
 # 날짜 인덱스 변경 설계 (구현 전 확정)
 
+> **채택하지 않은 안의 기록입니다.** B+Tree 날짜 인덱스는 PR #1 로 main 에 합쳤다가, 이 앱 규모(수천~수만 건)에서는
+> 정렬 배열로 충분하고 코드가 훨씬 단순하다는 판단으로 2026-10-21 에 정렬 배열로 되돌렸습니다. 이 문서가 설명하는 코드
+> (`budget_app/bplustree.py`, `tests/test_bplustree.py`, `tools/bench_date_index.py` 등)는 main 에 없고, 태그
+> `bplustree-date-index`(커밋 `ed15550`)에 그대로 남아 있습니다: `git switch --detach bplustree-date-index`.
+> 함께 만든 개선 중 B+Tree 와 상관없는 것(위치 칸 되돌리기 기록 `.slot-undo`, import·compact 메모리 감소,
+> `tools/bench_large.py --app-dir`)은 main 에 남겼습니다. 현재 동작과 측정은 README 4~6부를 보세요.
+
 기준: `main` 커밋 `4713a5bc9406816477d8ffd4b2e0e0fb498b91aa`.
 전체 28개 파일의 Git blob, tree 및 원본 커밋 해시를 검증했고, 수정 전 기존 unittest 17개가 통과했다.
 

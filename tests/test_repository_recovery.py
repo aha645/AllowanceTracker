@@ -1,4 +1,4 @@
-"""Repository compatibility, date index rebuild, 100k rows and cross-file recovery."""
+"""저장소: 10만 건, 날짜 인덱스 재생성, 파일 간 일관성과 위치 칸 되돌리기(.slot-undo) 복구."""
 
 from __future__ import annotations
 
@@ -13,11 +13,10 @@ from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
 
-from budget_app.bplustree import DateIndex
 from budget_app.context import AppContext
 from budget_app.durability import SlotUndo
 from budget_app.models import StorageError, Transaction
-from budget_app.repository import DATE_ENTRY_STRUCT, SLOT_STRUCT, TransactionRepository, date_ordinal
+from budget_app.repository import SLOT_STRUCT, DateIndex, TransactionRepository
 from budget_app.services import SearchCriteria
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,7 +26,10 @@ def tx(day: str = "2024-01-15", amount: int = 100) -> Transaction:
     return Transaction(id=0, date=day, type="expense", category="식비", amount=amount, memo="한글 메모")
 
 
-class RepositoryBPlusTreeTests(unittest.TestCase):
+REBUILT = "날짜 인덱스가 손상되어 거래 파일에서 다시 만들었습니다."
+
+
+class RepositoryRecoveryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -50,8 +52,7 @@ class RepositoryBPlusTreeTests(unittest.TestCase):
         oracle = sorted([(day, i + 1, i + 1) for i, day in enumerate(days)], reverse=True)
         self.assertEqual(self.listing(), oracle)
         self.assertEqual(self.repo.index.next_id(), 100001)
-        info = self.repo.date_index.validate()
-        self.assertGreaterEqual(info["height"], 3)
+        self.assertEqual(self.repo.date_index.count(), 100000)
         # Query independently computed boundaries, including a full month and no results.
         for low, high in [("2022-02-01", "2022-02-28"), ("2020-01-01", "2020-01-01"),
                           ("2010-01-01", "2010-01-31"), ("2024-12-31", "9999-12-31")]:
@@ -72,7 +73,7 @@ class RepositoryBPlusTreeTests(unittest.TestCase):
         self.assertEqual(self.repo.index.next_id(), next_id)
         self.assertIsNone(self.repo.read_transaction(51))
         self.assertEqual(self.listing(), oracle)
-        self.assertEqual(self.repo.date_index.validate()["entries"], len(oracle))
+        self.assertEqual(self.repo.date_index.count(), len(oracle))  # compact 가 옛 항목을 정리했다
 
     def test_same_date_ties_updates_back_and_forth_no_duplicates(self) -> None:
         for _ in range(400):
@@ -89,51 +90,50 @@ class RepositoryBPlusTreeTests(unittest.TestCase):
         self.repo.compact()
         self.assertEqual(self.repo.append_transaction(tx()).id, 401)
 
-    def test_old_format_index_rebuilt_without_backup_keeps_ids_and_deleted_slots(self) -> None:
+    def damage_date_index(self) -> None:
+        """마지막 항목이 덜 써진 것처럼 5바이트를 잘라 크기를 12의 배수가 아니게 만든다."""
+        raw = self.repo.date_idx_path.read_bytes()
+        self.repo.date_idx_path.write_bytes(raw[:-5])
+
+    def test_damaged_index_rebuilt_keeps_ids_and_deleted_slots(self) -> None:
         self.repo.append_transactions([tx("2024-03-01"), tx("2023-01-01"), tx("2024-03-01")])
         self.repo.update_transaction(self.repo.get_transaction(2).replace_fields(date="2025-01-01"))
         self.repo.delete_transaction(3)
         before = self.listing(self.repo)
         log_before, idx_before = self.repo.log_path.read_bytes(), self.repo.idx_path.read_bytes()
-        # Exact original layout, including deleted/stale/orphan keys.
-        legacy_keys = [(date_ordinal("2023-01-01"), 2), (date_ordinal("2024-03-01"), 1),
-                       (date_ordinal("2024-03-01"), 3), (date_ordinal("2025-01-01"), 2),
-                       (date_ordinal("2099-01-01"), 4)]
-        legacy = b"".join(DATE_ENTRY_STRUCT.pack(*key) for key in legacy_keys)
-        self.repo.date_idx_path.write_bytes(legacy)
+        self.assertEqual(self.repo.date_index.count(), 4)  # update 로 남은 옛 날짜 항목 포함
+        self.damage_date_index()
         reopened = self.open_repo()
-        self.assertIn("다시 만들었습니다", " ".join(reopened.recovered))
+        self.assertEqual(reopened.recovered, [REBUILT])
         self.assertEqual(self.listing(reopened), before)
         self.assertEqual(reopened.log_path.read_bytes(), log_before)
         self.assertEqual(reopened.idx_path.read_bytes(), idx_before)
         self.assertEqual(sorted(path.name for path in self.folder.glob("transactions.date.idx*")),
-                         ["transactions.date.idx"])  # 예전 형식은 백업하지 않는다
-        self.assertEqual(reopened.date_index.validate()["entries"], 2)
+                         ["transactions.date.idx"])  # 백업하지 않는다
+        self.assertEqual(reopened.date_index.count(), 2)  # 살아있는 거래만 다시 담는다
         self.assertEqual(reopened.append_transaction(tx()).id, 4)
         self.assertEqual(self.open_repo().recovered, [])  # 다시 만든 뒤에는 안내가 없다
 
-    def test_old_format_rebuild_interrupted_before_and_after_replace(self) -> None:
+    def test_rebuild_interrupted_before_and_after_replace(self) -> None:
         self.repo.append_transactions([tx(), tx("2023-01-01")])
         expected = self.listing(self.repo)
-        legacy = b"".join(DATE_ENTRY_STRUCT.pack(date_ordinal(day), tx_id)
-                          for day, tx_id, _ in sorted(expected))
         for when in ["before", "after"]:
             with self.subTest(when=when):
-                self.repo.date_idx_path.write_bytes(legacy)
+                self.damage_date_index()
                 real_replace = os.replace
                 def stop(src, dst):
-                    if Path(src).name == "transactions.date.idx.build":
+                    if Path(src).name == "transactions.date.idx.tmp":
                         if when == "after":
                             real_replace(src, dst)
                         raise KeyboardInterrupt
                     return real_replace(src, dst)
-                with mock.patch("budget_app.bplustree.os.replace", side_effect=stop), self.assertRaises(KeyboardInterrupt):
+                with mock.patch("budget_app.repository.os.replace", side_effect=stop), \
+                     self.assertRaises(KeyboardInterrupt):
                     self.open_repo()
                 self.assertEqual(self.listing(), expected)
-                self.assertFalse((self.folder / "transactions.date.idx.legacy.bak").exists())
 
-    def test_large_import_rebuilds_merged_index_and_survives_interruption(self) -> None:
-        # 넣을 건수가 기존 키 이상이면 삽입 대신 기존 키와 합쳐 새로 만든다(rebuild_merged).
+    def test_import_date_merge_interrupted_before_and_after_replace(self) -> None:
+        # 기존 마지막 날짜보다 이른 행이 있으면 병합해 임시 파일로 교체한다. 그 앞뒤 어디서 멈춰도 import 전 그대로다.
         self.repo.append_transactions([tx("2024-01-15"), tx("2023-01-01")])
         self.repo.update_transaction(self.repo.get_transaction(1).replace_fields(date="2022-06-01"))
         expected = self.listing(self.repo)
@@ -142,14 +142,13 @@ class RepositoryBPlusTreeTests(unittest.TestCase):
             with self.subTest(when=when):
                 real_replace = os.replace
                 def stop(src, dst):
-                    if Path(src).name == "transactions.date.idx.build":
+                    if Path(src).name == "transactions.date.idx.tmp":
                         if when == "after":
                             real_replace(src, dst)  # 교체는 됐지만 슬롯을 쓰기 전에 멈춘 경우
                         raise KeyboardInterrupt
                     return real_replace(src, dst)
                 repo = self.open_repo()
-                with mock.patch("budget_app.bplustree.os.replace", side_effect=stop), \
-                     mock.patch.object(DateIndex, "merge", side_effect=AssertionError("삽입 경로를 타면 안 됨")), \
+                with mock.patch("budget_app.repository.os.replace", side_effect=stop), \
                      self.assertRaises(KeyboardInterrupt):
                     repo.append_transactions(rows)
                 self.assertEqual(self.listing(), expected)
@@ -157,26 +156,23 @@ class RepositoryBPlusTreeTests(unittest.TestCase):
         self.assertEqual(repo.append_transactions(rows), 400)
         self.assertEqual(self.listing(repo), sorted(expected + [(row.date, 3 + i, i + 1) for i, row in enumerate(rows)],
                                                     reverse=True))
-        info = repo.date_index.validate()
-        # 옛 날짜 키와 중단된 import 의 키는 남아 있어도 leaf 는 꽉 차 있다(256바이트가 아닌 4096바이트 페이지).
-        self.assertEqual(info["leaves"], -(-info["entries"] // 338))
+        # 옛 날짜 항목 1개 + 살아있는 2개 + 새 400개. 중단된 import 가 남긴 항목은 같은 id 로 다시 들어와 겹친다.
+        self.assertEqual(repo.date_index.count(), 403)
 
-    def test_missing_truncated_metadata_and_corrupt_wal_rebuilt_from_authority(self) -> None:
+    def test_missing_and_truncated_index_rebuilt_from_authority(self) -> None:
         self.repo.append_transactions([tx(), tx("2023-01-01"), tx("2025-01-01")])
         self.repo.delete_transaction(2)
         expected = self.listing(self.repo)
         self.repo.date_idx_path.unlink()
-        self.assertEqual(self.listing(), expected)
-        self.repo.date_idx_path.write_bytes(b"broken header")
-        self.assertEqual(self.listing(), expected)
-        def stop(stage: str) -> None:
-            if stage == "wal_published":
-                raise KeyboardInterrupt
-        with mock.patch.object(self.repo.date_index, "_checkpoint", side_effect=stop), self.assertRaises(KeyboardInterrupt):
-            self.repo.append_transaction(tx("2024-05-01"))
-        self.repo.date_index.wal_path.write_bytes(b"torn WAL")
-        self.assertEqual(self.listing(), expected)
-        self.assertIsNone(self.open_repo().read_transaction(2))  # no resurrection from JSONL
+        reopened = self.open_repo()
+        self.assertEqual(reopened.recovered, [])  # 없던 파일은 조용히 만든다
+        self.assertEqual(self.listing(reopened), expected)
+        raw = self.repo.date_idx_path.read_bytes()
+        self.repo.date_idx_path.write_bytes(raw[:-5])  # 마지막 항목이 덜 써진 손상(12의 배수가 아님)
+        reopened = self.open_repo()
+        self.assertEqual(reopened.recovered, [REBUILT])
+        self.assertEqual(self.listing(reopened), expected)
+        self.assertIsNone(reopened.read_transaction(2))  # 삭제한 거래를 JSONL 에서 되살리지 않는다
 
     def test_jsonl_then_date_failure_leaves_uncommitted_orphan(self) -> None:
         old = self.repo.append_transaction(tx())
@@ -190,45 +186,6 @@ class RepositoryBPlusTreeTests(unittest.TestCase):
             self.repo.update_transaction(old.replace_fields(date="2020-01-01"))
         self.assertEqual(self.listing(), expected)
         self.assertEqual(self.open_repo().append_transaction(tx()).id, 2)
-
-    def test_damaged_header_with_size_multiple_of_12_is_rebuilt_as_damage(self) -> None:
-        # 예전에는 크기가 12의 배수인 손상 파일을 예전 형식으로 오인해 "마이그레이션" 안내와 백업을 만들었다.
-        self.repo.append_transactions([tx(), tx("2023-01-01"), tx("2025-01-01")])
-        expected = self.listing(self.repo)
-        raw = bytearray(self.repo.date_idx_path.read_bytes())
-        raw += bytes(-len(raw) % 12288)  # 4096바이트 페이지 3개 단위 → 12의 배수
-        raw[:8] = bytes(8)  # 파일 종류 표시가 지워진 손상
-        self.assertEqual(len(raw) % 12, 0)
-        self.repo.date_idx_path.write_bytes(raw)
-        before_log, before_idx = self.repo.log_path.read_bytes(), self.repo.idx_path.read_bytes()
-        reopened = self.open_repo()
-        self.assertEqual(reopened.recovered,
-                         ["날짜 인덱스를 읽을 수 없어(손상 또는 예전 형식) 거래 파일에서 다시 만들었습니다."])
-        self.assertEqual(self.listing(reopened), expected)
-        self.assertEqual(reopened.log_path.read_bytes(), before_log)
-        self.assertEqual(reopened.idx_path.read_bytes(), before_idx)
-        self.assertFalse((self.folder / "transactions.date.idx.legacy.bak").exists())
-        self.assertEqual(reopened.date_index.validate()["entries"], 3)
-
-    def test_wal_replay_still_does_not_commit_repository_transaction(self) -> None:
-        old = self.repo.append_transaction(tx())
-        before_idx = self.repo.idx_path.read_bytes()
-        for operation in ["add", "update"]:
-            with self.subTest(operation=operation):
-                repo = self.open_repo()
-                def stop(stage: str) -> None:
-                    if stage == "wal_published":
-                        raise KeyboardInterrupt
-                with mock.patch.object(repo.date_index, "_checkpoint", side_effect=stop), \
-                     self.assertRaises(KeyboardInterrupt):
-                    if operation == "add":
-                        repo.append_transaction(tx("1900-01-01"))
-                    else:
-                        repo.update_transaction(old.replace_fields(date="1900-01-01"))
-                reopened = self.open_repo()
-                self.assertEqual(reopened.idx_path.read_bytes(), before_idx)
-                self.assertEqual(self.listing(reopened), [(old.date, old.id, old.amount)])
-                self.assertEqual(reopened.date_index.validate()["entries"], 2 if operation == "add" else 3)
 
     def test_torn_slot_add_update_delete_undo(self) -> None:
         old = self.repo.append_transaction(tx())

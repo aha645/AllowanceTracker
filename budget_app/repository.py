@@ -1,9 +1,9 @@
-"""거래 저장 엔진: append-only 로그(JSONL) + 위치 기반 고정폭 이진 인덱스 + 디스크 B+Tree 날짜 인덱스.
+"""거래 저장 엔진: append-only 로그(JSONL) + 위치 기반 고정폭 이진 인덱스 + 날짜 정렬 인덱스.
 
 파일 구성
     transactions.jsonl     거래 원본. append 전용(수정도 새 버전을 끝에 덧붙인다).
     transactions.idx       id -> 현재 유효 byte 범위 매핑. 슬롯당 16바이트 고정폭.
-    transactions.date.idx  4096바이트 페이지 B+Tree + 페이지 after-image WAL.
+    transactions.date.idx  (거래일자, id) 를 날짜순으로 정렬해 둔 보조 인덱스. 항목당 12바이트 고정폭.
 
 인덱스 슬롯
     슬롯 위치가 곧 id 다. id N 의 슬롯은 (N-1)*16 바이트 위치에 있고
@@ -13,7 +13,7 @@
 날짜 인덱스
     id 순서(= 등록 순서)와 거래일자 순서는 다를 수 있다(예: 옛 날짜 CSV 를 import).
     그래서 최신순 조회는 id 슬롯이 아니라 이 정렬 인덱스를 맨 끝부터 역순으로 읽는다.
-    leaf 키는 `struct.pack("<IQ", date.toordinal(), id)` 이며 (날짜, id) 순으로 정렬돼 있다.
+    항목은 `struct.pack("<IQ", date.toordinal(), id)` 이며 (날짜, id) 오름차순으로 정렬돼 있다.
     update 로 날짜가 바뀌면 새 항목을 끼워 넣고 옛 항목은 지우지 않는다(읽을 때 건너뜀).
     삭제된 거래의 항목도 마찬가지다. 이 파일은 transactions.jsonl/idx 에서 언제든 다시 만들 수 있다.
 
@@ -33,9 +33,9 @@ from array import array
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from itertools import chain
 from typing import BinaryIO, Iterable, Iterator
 
-from .bplustree import DateIndex
 from .durability import SlotUndo
 from .models import NotFoundError, StorageError, Transaction
 
@@ -44,31 +44,48 @@ SLOT_STRUCT = struct.Struct("<QQ")
 DELETED_SLOT = (0, 0)
 
 DATE_ENTRY_STRUCT = struct.Struct("<IQ")
-DATE_ENTRY_SIZE = DATE_ENTRY_STRUCT.size  # 12-byte composite key inside leaf pages
+DATE_ENTRY_SIZE = DATE_ENTRY_STRUCT.size  # 12
+MERGE_CHUNK_ENTRIES = 4096
 
 #: (날짜 순번, 거래 id). 날짜 순번은 `date.toordinal()` 이다.
 DateEntry = tuple[int, int]
 
 _ID_BITS = 64
+_ID_MASK = (1 << _ID_BITS) - 1
 
 
 def entry_key(entry: DateEntry) -> int:
     """(날짜 순번, id) 를 정렬 순서가 같은 정수 하나로 합친다.
 
-    Python 정수로 날짜와 unsigned 64-bit id를 손실 없이 담는다.
+    Python 정수로 날짜와 unsigned 64-bit id를 손실 없이 담는다. 많은 키를 담을 때는 이 정수 대신
+    날짜·id 배열을 따로 쓴다(정수 객체는 건당 수십 바이트).
     """
     ordinal, tx_id = entry
     return ordinal << _ID_BITS | tx_id
 
 
+def _pack_key(key: int) -> bytes:
+    return DATE_ENTRY_STRUCT.pack(key >> _ID_BITS, key & _ID_MASK)
+
+
+def _unique(sorted_keys: Iterable[int]) -> Iterator[int]:
+    """오름차순 키에서 연속 중복을 뺀다. 순서가 어긋나면 병합 결과가 틀리므로 오류로 멈춘다."""
+    prev: int | None = None
+    for key in sorted_keys:
+        if prev is not None and key < prev:
+            raise ValueError("날짜 키는 오름차순으로 넘겨야 합니다")
+        if key != prev:
+            yield key
+            prev = key
+
+
 def _sorted_keys(ordinals: array[int], ids: array[int]) -> Iterator[DateEntry]:
     """id 오름차순으로 모은 (날짜, id) 를 정렬 순서로 하나씩 낸다(import 와 날짜 인덱스 재생성 용).
 
-    B+Tree 에 무작위 순서로 넣으면 키가 곳곳의 leaf 에 흩어져, 변경 페이지 상한(MAX_DIRTY_PAGES)에
-    금방 닿아 자주 확정하고 같은 페이지를 여러 번 다시 쓴다(100만 건 import 가 2배 넘게 느려짐).
-    정렬해서 넣으면 leaf 를 앞에서부터 한 번씩만 지나가고, 재생성(DateIndex.rebuild)은 정렬된 키를 요구한다.
-    id 는 이미 오름차순이고 날짜 종류는 많아야 수천 개라, 날짜별로 나누기만 하면 정렬이 끝난다(계수 정렬,
-    추가 메모리는 id 배열 하나).
+    날짜 인덱스의 병합(DateIndex.merge_keys)과 재생성(DateIndex.rebuild)은 정렬된 키를 요구한다.
+    sorted() 로 정렬하면 키마다 파이썬 정수 객체와 리스트 칸이 생겨(건당 수십 바이트) 100만 건 import 가
+    92MB, compact 가 350MB 를 썼다. id 는 이미 오름차순이고 날짜 종류는 많아야 수천 개라, 날짜별로
+    나누기만 하면 정렬이 끝난다(계수 정렬, 추가 메모리는 id 배열 하나).
     """
     counts: dict[int, int] = {}
     for ordinal in ordinals:
@@ -196,6 +213,140 @@ class TransactionIndex:
         self.write_slot(tx_id, 0, 0)
 
 
+class DateIndex:
+    """`transactions.date.idx` 한 파일을 다루는 래퍼: (날짜 순번, id) 오름차순 고정폭 배열."""
+
+    def __init__(self, path: Path) -> None:
+        self.path: Path = path
+
+    def size(self) -> int:
+        try:
+            return self.path.stat().st_size
+        except FileNotFoundError:
+            return 0
+
+    def is_valid(self) -> bool:
+        """파일이 존재하고 크기가 항목 크기의 배수인지(손상되지 않았는지)."""
+        return self.path.exists() and self.size() % DATE_ENTRY_SIZE == 0
+
+    def count(self) -> int:
+        size = self.size()
+        if size % DATE_ENTRY_SIZE:
+            raise StorageError(
+                f"날짜 인덱스 파일 크기({size}B)가 항목 크기 {DATE_ENTRY_SIZE}B 의 배수가 아닙니다.",
+                f"{self.path} 를 삭제하고 다시 실행하면 자동으로 재생성됩니다(또는 compact 실행).",
+            )
+        return size // DATE_ENTRY_SIZE
+
+    @staticmethod
+    def _read(fp: BinaryIO, pos: int) -> DateEntry:
+        fp.seek(pos * DATE_ENTRY_SIZE)
+        raw = fp.read(DATE_ENTRY_SIZE)
+        if len(raw) != DATE_ENTRY_SIZE:
+            raise StorageError("날짜 인덱스를 읽는 도중 파일이 끝났습니다.", "compact 로 인덱스를 재생성하세요.")
+        return DATE_ENTRY_STRUCT.unpack(raw)
+
+    def bisect_left(self, key: DateEntry) -> int:
+        """정렬된 항목 중 key 이상인 첫 위치(없으면 count). 이진 탐색이라 O(log n) 번만 읽는다."""
+        total = self.count()
+        if total == 0:
+            return 0
+        lo, hi = 0, total
+        with self.path.open("rb") as fp:
+            while lo < hi:
+                mid = (lo + hi) // 2
+                if self._read(fp, mid) < key:
+                    lo = mid + 1
+                else:
+                    hi = mid
+        return lo
+
+    def iter_desc(self, lo: int, hi: int) -> Iterator[DateEntry]:
+        """[lo, hi) 구간의 항목을 맨 끝(hi-1)부터 역순으로 하나씩 yield 한다(제너레이터)."""
+        if lo >= hi:
+            return
+        with self.path.open("rb") as fp:
+            for pos in range(hi - 1, lo - 1, -1):
+                yield self._read(fp, pos)
+
+    def _last(self) -> DateEntry | None:
+        total = self.count()
+        if total == 0:
+            return None
+        with self.path.open("rb") as fp:
+            return self._read(fp, total - 1)
+
+    def merge(self, entries: Iterable[DateEntry]) -> None:
+        """새 항목 몇 개를 정렬 상태를 유지하며 끼워 넣는다(add/update 용, 이미 있는 항목은 무시)."""
+        self.merge_keys(sorted({entry_key(e) for e in entries}))
+
+    def merge_keys(self, keys: Iterable[int]) -> None:
+        """오름차순 `entry_key()` 정수 키를 병합한다(import 는 계수 정렬한 키를 하나씩 넘긴다).
+
+        모두 마지막 항목보다 크면(평소 add) 끝에 append 만 한다. 그렇지 않으면(옛 날짜 거래/import)
+        기존 파일을 한 번만 훑으며 병합해 임시 파일에 쓰고 os.replace 로 교체한다. O(n+m).
+        """
+        pending = _unique(keys)
+        nxt = next(pending, None)
+        if nxt is None:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        last = self._last() if self.path.exists() else None
+        if last is None or nxt > entry_key(last):
+            with self.path.open("ab") as fp:
+                self._write_keys(fp, chain([nxt], pending))
+                fp.flush()
+                os.fsync(fp.fileno())
+            return
+        tmp_path = self.path.with_name(self.path.name + ".tmp")
+        with self.path.open("rb") as src, tmp_path.open("wb") as dst:
+            while True:
+                chunk = src.read(MERGE_CHUNK_ENTRIES * DATE_ENTRY_SIZE)
+                if not chunk:
+                    break
+                out: list[bytes] = []
+                for cur in DATE_ENTRY_STRUCT.iter_unpack(chunk):
+                    cur_key = entry_key(cur)
+                    while nxt is not None and nxt < cur_key:
+                        out.append(_pack_key(nxt))
+                        nxt = next(pending, None)
+                    if nxt == cur_key:  # 이미 있는 항목
+                        nxt = next(pending, None)
+                    out.append(DATE_ENTRY_STRUCT.pack(*cur))
+                dst.write(b"".join(out))
+            if nxt is not None:
+                self._write_keys(dst, chain([nxt], pending))
+            dst.flush()
+            os.fsync(dst.fileno())
+        os.replace(tmp_path, self.path)
+        # 교체를 확정하지 않으면, 이 뒤에 위치 슬롯을 확정한 다음 전원이 꺼졌을 때 교체가 되돌아가
+        # 저장된 거래의 날짜 항목이 없어진다(목록·요약에서 빠짐). 쓰기 순서를 지키려면 여기서 확정해야 한다.
+        _fsync_dir(self.path.parent)
+
+    @staticmethod
+    def _write_keys(fp: BinaryIO, keys: Iterable[int]) -> None:
+        """키를 MERGE_CHUNK_ENTRIES 개씩 묶어 쓴다(한 번에 join 하면 건마다 bytes 객체가 쌓인다)."""
+        out: list[bytes] = []
+        for key in keys:
+            out.append(_pack_key(key))
+            if len(out) >= MERGE_CHUNK_ENTRIES:
+                fp.write(b"".join(out))
+                out.clear()
+        if out:
+            fp.write(b"".join(out))
+
+    def rebuild(self, entries: Iterable[DateEntry]) -> None:
+        """오름차순 항목으로 파일을 처음부터 다시 만든다(임시 파일 + os.replace)."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self.path.with_name(self.path.name + ".tmp")
+        with tmp_path.open("wb") as fp:
+            self._write_keys(fp, _unique(entry_key(e) for e in entries))
+            fp.flush()
+            os.fsync(fp.fileno())
+        os.replace(tmp_path, self.path)
+        _fsync_dir(self.path.parent)  # merge_keys() 와 같은 이유로 교체를 확정한다
+
+
 @dataclass(slots=True)
 class StorageStats:
     """저장 파일 상태(컴팩션 필요 여부 판단용)."""
@@ -256,13 +407,13 @@ class TransactionRepository:
             self.recovered.append("끝나지 않은 거래 저장의 위치 슬롯을 이전 상태로 복구했습니다.")
         if self.index.drop_partial_slot():
             self.recovered.append("끝나지 않은 마지막 저장(add)의 조각을 정리했습니다. 그 거래는 저장되지 않았습니다.")
-        # 날짜 인덱스가 없거나 B+Tree 로 읽을 수 없으면 원본(idx+jsonl)에서 다시 만든다. 날짜 인덱스는 보조
-        # 자료라 따로 백업하지 않는다. 예전 정렬 배열 형식도 여기서 손상과 똑같이 다시 만들어진다.
+        # 날짜 인덱스가 없거나 손상됐으면(크기가 12의 배수가 아님) 원본(idx+jsonl)에서 다시 만든다.
+        # 날짜 인덱스는 언제든 다시 만들 수 있는 보조 자료라 따로 백업하지 않는다.
         if not self.date_index.is_valid():
             damaged = self.date_idx_path.exists()  # 없던 파일(첫 실행)은 조용히 만든다
             self.rebuild_date_index()
             if damaged:
-                self.recovered.append("날짜 인덱스를 읽을 수 없어(손상 또는 예전 형식) 거래 파일에서 다시 만들었습니다.")
+                self.recovered.append("날짜 인덱스가 손상되어 거래 파일에서 다시 만들었습니다.")
 
     def _live_date_entries(self) -> Iterator[DateEntry]:
         """살아있는 모든 거래의 (날짜 순번, id) 를 id 순서로 yield 한다."""
@@ -294,7 +445,7 @@ class TransactionRepository:
 
     def rebuild_date_index(self) -> None:
         """transactions.jsonl/idx 로부터 날짜 인덱스를 처음부터 다시 만든다."""
-        # 재생성은 정렬된 키로 leaf 를 꽉 채워 쓴다. 키는 import 와 같이 건당 12바이트 배열에 모아 정렬한다.
+        # 키는 import 와 같이 건당 12바이트 배열에 모아 계수 정렬한다(튜플로 모으면 100만 건에 수백 MB).
         ordinals = array("I")
         ids = array("Q")
         for ordinal, tx_id in self._live_date_entries():
@@ -325,7 +476,7 @@ class TransactionRepository:
         # 날짜 색인에만 빠져 list/summary 에서 조용히 사라진다. 이 순서면 꺼져도 남는 건 슬롯 범위 밖
         # id 의 날짜 항목뿐이라 읽을 때 건너뛰고, 그 id 는 다음 add 때 다시 발급된다.
         self.date_index.merge([(date_ordinal(stored.date), stored.id)])
-        # 날짜 키의 WAL 완료는 거래 완료가 아니다. idx를 쓰기 전에 undo를 먼저 확정한다.
+        # 날짜 항목을 썼다고 거래가 완료된 것은 아니다. idx를 쓰기 전에 undo를 먼저 확정한다.
         self.slot_undo.prepare(new_id)
         assigned = self.index.append_slot(start, end)
         if assigned != new_id:  # pragma: no cover - 동시 실행 방어
@@ -339,11 +490,9 @@ class TransactionRepository:
     def append_transactions(self, transactions: Iterable[Transaction]) -> int:
         """여러 거래를 한 번에 저장하고 저장한 건수를 돌려준다(import 용).
 
-        로그 레코드와 인덱스 슬롯은 각각 이어 쓰고, 날짜 페이지 변경은 WAL 하나로 묶는다.
-        옛 날짜가 섞여 있어도 행마다 인덱스 파일 전체를 다시 쓰지 않는다.
-        거래 객체는 모으지 않고, 슬롯과 날짜 키는 건당 16+12바이트 배열에 담는다. 날짜 인덱스의
-        변경 페이지는 DateIndex.merge 가 일정 개수마다 먼저 확정하므로 배치 크기에 비례해 늘지 않는다.
-        넣을 건수가 기존 키 이상이면 날짜 인덱스는 삽입 대신 기존 키와 합쳐 새로 만든다(rebuild_merged).
+        로그 레코드와 인덱스 슬롯은 각각 한 번에 이어 쓰고(fsync 도 파일당 한 번), 날짜 인덱스는 모아서
+        한 번에 병합한다. 옛 날짜가 섞여 있어도 행마다 파일을 다시 쓰지 않는다.
+        거래 객체는 모으지 않고, 슬롯과 날짜 키는 건당 16+12바이트 배열에 담는다.
         """
         self.ensure_files()
         next_id = self.index.next_id()
@@ -372,12 +521,7 @@ class TransactionRepository:
             return 0
         # append_transaction() 과 같은 이유로 날짜 항목을 슬롯보다 먼저 쓴다. 슬롯 묶음을 쓰기 전에
         # 꺼지면 import 한 거래 전체가 슬롯 범위 밖이 되어, 반쯤 보이는 상태 없이 통째로 없던 일이 된다.
-        if count >= self.date_index.count():
-            # 넣을 건수가 기존 키 이상이면(빈 저장소 포함) 하나씩 삽입하지 않고 기존 키와 합쳐 새로 만든다.
-            # 빠르고 leaf 도 꽉 차며, 교체 전에 꺼지면 원래 날짜 인덱스가 그대로 남는다.
-            self.date_index.rebuild_merged(_sorted_keys(ordinals, ids))
-        else:
-            self.date_index.merge_keys(entry_key(key) for key in _sorted_keys(ordinals, ids))
+        self.date_index.merge_keys(entry_key(key) for key in _sorted_keys(ordinals, ids))
         # 슬롯 묶음은 크기가 커서 쓰는 도중 꺼지면 앞쪽 슬롯만 남아 일부 행만 들어간 상태가 될 수 있다.
         # 그래서 쓰기 전 크기를 기록해 두고, 다 쓴 뒤 그 기록을 지우는 순간을 import 완료로 삼는다.
         # 기록이 남아 있으면 다음 실행 때 _recover_interrupted_import() 가 그 크기로 잘라 import 전체를 취소한다.
@@ -500,21 +644,23 @@ class TransactionRepository:
         날짜 인덱스를 맨 끝부터 역순으로 읽고, 항목마다 해당 id 의 레코드 byte 범위만 seek 해서 읽는다.
         그래서 전체를 메모리에 올리지 않고, 호출자가 limit 에서 멈추면 그 뒤는 읽지 않는다
         (옛 날짜를 import 해도 id 순서와 무관하게 날짜순이 유지된다).
-        `date_from`/`date_to`(YYYY-MM-DD, 포함)를 주면 B+Tree에서 구간 시작 leaf만 찾아 읽는다.
+        `date_from`/`date_to`(YYYY-MM-DD, 포함)를 주면 이진 탐색으로 그 구간만 읽는다.
         list/search/summary/export/category remove 가 모두 이 제너레이터 하나를 소비한다.
         """
         if not self.log_path.exists():
             return
-        # 트리 API의 upper는 미포함이다. 종료일의 다음 ordinal을 주면 종료일 전체가 포함된다.
-        # 실제 키의 id는 1 이상이므로 경계용 id=0은 그 날짜의 모든 거래 앞에 놓인다.
-        lower = (date_ordinal(date_from), 0) if date_from else None
-        upper = (date_ordinal(date_to) + 1, 0) if date_to else None
+        lo = self.date_index.bisect_left((date_ordinal(date_from), 0)) if date_from else 0
+        hi = (
+            self.date_index.bisect_left((date_ordinal(date_to) + 1, 0))
+            if date_to
+            else self.date_index.count()
+        )
         # 날짜 항목의 id 를 슬롯 수와 비교해, 중단된 저장의 흔적(건너뜀)과 손상(오류)을 구분한다.
         # 예전에는 둘 다 슬롯을 읽다 실패하면 조용히 건너뛰어서, 손상돼도 거래가 빠진 결과가
         # 종료 코드 0 으로 나왔고 id 0 은 음수 seek 로 엉뚱한 입출력 오류가 났다.
         slot_count = self.index.slot_count()
         with self.idx_path.open("rb") as idx, self.log_path.open("rb") as log:
-            for ordinal, tx_id in self.date_index.iter_range(lower, upper, reverse=True):
+            for ordinal, tx_id in self.date_index.iter_desc(lo, hi):
                 if tx_id == 0:  # id 는 1부터라 정상적으로는 생길 수 없다
                     raise StorageError(
                         "날짜 인덱스(transactions.date.idx)가 손상되었습니다: id 0 항목이 있습니다.",
