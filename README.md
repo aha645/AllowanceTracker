@@ -13,7 +13,7 @@ python --version                           # 3.10 이상인지 확인
 python -m budget_app --help                # 전체 도움말 (서브커맨드: python -m budget_app <command> --help)
 ```
 
-첫 실행 때 현재 폴더에 `data/` 폴더와 아래 파일들이 자동으로 만들어집니다(`--data-dir PATH` 로 저장 폴더 변경 가능).
+`add`·`list` 같은 하위 명령을 처음 실행할 때 현재 폴더에 `data/` 폴더와 아래 파일들이 자동으로 만들어집니다(`--data-dir PATH` 로 저장 폴더 변경 가능). `--help` 만 실행하거나 하위 명령 없이 실행하면 아무것도 만들어지지 않습니다.
 
 ```text
 data/
