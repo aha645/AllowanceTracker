@@ -18,12 +18,11 @@ python -m budget_app --help                # 전체 도움말 (서브커맨드: 
 ```text
 data/
 ├── transactions.jsonl       거래 내용 원본. 한 줄이 거래 1건(JSON)이며 끝에만 덧붙임
-├── categories.jsonl         등록한 카테고리 목록과 카테고리별 사용 건수
-├── budgets.jsonl            월별 예산
 ├── transactions.idx         거래 id → jsonl 안의 위치 (조회·수정·삭제용 색인)
 ├── transactions.date.idx    (거래일자, id) 날짜순 목록 (최신순·기간 조회용 색인)
-├── recurring.jsonl          반복 거래 규칙 (보너스)
-└── backup/                  `backup` 명령을 실행하면 생기는 타임스탬프 백업 폴더 (보너스)
+├── categories.jsonl         등록한 카테고리 목록과 카테고리별 사용 건수
+├── budgets.jsonl            월별 예산
+└── recurring.jsonl          반복 거래 규칙 (보너스)
 ```
 
 - 구성: `cli`(명령 연결) → `commands/`(기능별 핸들러) → `services`(규칙) → `repository`·`stores`(파일 저장), 공통 처리는 데코레이터 `@command`.
