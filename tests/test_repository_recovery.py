@@ -283,6 +283,20 @@ repo.update_transaction(repo.get_transaction(2).replace_fields(date="2023-01-01"
             self.open_repo()
         self.assertEqual(self.repo.idx_path.read_bytes(), before)
 
+    def test_slot_journal_with_wrong_hash_fails_closed(self) -> None:
+        # 길이(72바이트)·형식 표시·범위는 맞고 원래 슬롯 1바이트만 바뀐 기록은 SHA-256 검사로만 걸러진다
+        self.repo.append_transaction(tx())
+        before = self.repo.idx_path.read_bytes()
+        self.repo.slot_undo.prepare(1)
+        raw = bytearray(self.repo.slot_undo.path.read_bytes())
+        self.assertEqual(len(raw), SlotUndo.HEADER.size + 32)
+        raw[SlotUndo.HEADER.size - 1] ^= 0xFF  # 헤더 마지막 바이트 = 원래 슬롯 16바이트의 끝
+        self.repo.slot_undo.path.write_bytes(bytes(raw))
+        with self.assertRaises(StorageError) as raised:
+            self.open_repo()
+        self.assertEqual(raised.exception.message, "거래 슬롯 복구 기록이 손상되었습니다.")
+        self.assertEqual(self.repo.idx_path.read_bytes(), before)  # 손상된 기록으로 덮어쓰지 않는다
+
     def test_real_process_crash_before_slot_commit(self) -> None:
         old = self.repo.append_transaction(tx())
         script = '''
