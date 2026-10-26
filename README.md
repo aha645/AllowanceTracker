@@ -22,7 +22,6 @@ data/
 ├── budgets.jsonl            월별 예산
 ├── transactions.idx         거래 id → jsonl 안의 위치 (조회·수정·삭제용 색인)
 ├── transactions.date.idx    (거래일자, id) 날짜순 목록 (최신순·기간 조회용 색인)
-├── transactions.idx.slot-undo 위치 칸을 바꾸는 동안에만 생기는 되돌리기 기록
 ├── recurring.jsonl          반복 거래 규칙 (보너스)
 └── backup/                  `backup` 명령을 실행하면 생기는 타임스탬프 백업 폴더 (보너스)
 ```
