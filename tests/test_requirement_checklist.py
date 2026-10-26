@@ -197,6 +197,16 @@ class RequirementChecklistTestCase(unittest.TestCase):
         _, out, _ = self.run_cli("list", "--all")
         return re.findall(r"^\s*\d+\s+(TX-\d+)\s", out, re.M)
 
+    def _listed_row(self, tx_id: str) -> list[str]:
+        """`list --all` 표에서 그 거래의 칸(id·날짜·타입·카테고리·금액·메모·태그)을 돌려준다.
+
+        칸 사이는 공백 두 칸 이상이고 메모 안의 띄어쓰기는 한 칸이므로 그 기준으로 나눈다.
+        빈 메모·태그는 줄 끝에서 빠진다.
+        """
+        _, out, _ = self.run_cli("list", "--all")
+        line = self._group(rf"^(\s*\d+\s+{re.escape(tx_id)}\s.*)$", out, re.M)
+        return re.split(r"\s{2,}", line.strip())[1:]
+
     # ==================================================================
     # 사전: 데이터 초기화
     # ==================================================================
@@ -224,38 +234,59 @@ class RequirementChecklistTestCase(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("[저장 완료]", out)
 
-        # 대화형 등록: 생성된 id 가 출력된다
+        # 등록한 4개가 실제로 목록에 있다
+        code, out, _ = self.run_cli("category", "list")
+        self.assertEqual(code, 0)
+        for name in ("식비", "교통", "월급", "월세"):
+            self.assertIn(name, out)
+        self.assertIn("[완료] 4개", out)
+
+        # 대화형 등록: 생성된 id 가 출력되고, 입력한 값 그대로 저장된다
         with self.fake_input(["2024-01-05", "expense", "식비", "12000", "점심", "외식"]):
             code, out, _ = self.run_cli("add")
         self.assertEqual(code, 0)
         self.assertIn("[저장 완료] id=TX-", out)
         self.ids["a"] = self._extract_id(out)
+        self.assertEqual(self._listed_row(self._id("a")),
+                         [self._id("a"), "2024-01-05", "expense", "식비", "-12,000", "점심", "외식"])
 
-        # 옵션 방식 등록
+        # 옵션 방식 등록: 띄어쓰기가 든 메모도 한 값으로 저장된다
         self._add("b", "2024-01-10", "expense", "교통", "20000", "지하철")
         self._add("c", "2024-01-25", "income", "월급", "3000000", "1월 급여")
         self._add("d", "2024-01-31", "expense", "월세", "500000", "1월 월세")
         self.assertEqual(len({self._id(k) for k in "abcd"}), 4)
-
-        # 잘못된 값은 저장되지 않고 거부된다
-        cases = {
-            "날짜 형식 오류": ("2024-13-40", "expense", "식비", "1000"),
-            "음수 금액": ("2024-01-01", "expense", "식비", "-500"),
-            "0 금액": ("2024-01-01", "expense", "식비", "0"),
-            "허용되지 않은 type": ("2024-01-01", "transfer", "식비", "1000"),
-            "미등록 카테고리": ("2024-01-01", "expense", "없는카테고리", "1000"),
+        expected_rows = {
+            "b": ["2024-01-10", "expense", "교통", "-20,000", "지하철"],
+            "c": ["2024-01-25", "income", "월급", "+3,000,000", "1월 급여"],
+            "d": ["2024-01-31", "expense", "월세", "-500,000", "1월 월세"],
         }
-        for label, (date, type_, category, amount) in cases.items():
+        for key, row in expected_rows.items():
+            with self.subTest(key):
+                self.assertEqual(self._listed_row(self._id(key)), [self._id(key), *row])
+
+        # 잘못된 값은 저장되지 않고 거부된다(사유가 맞게 나오고, 거래 수도 그대로)
+        listed_before = self._listed_ids()
+        self.assertEqual(len(listed_before), 4)
+        cases = {
+            "날짜 형식 오류": (("2024-13-40", "expense", "식비", "1000"), "날짜 형식이 올바르지 않습니다"),
+            "음수 금액": (("2024-01-01", "expense", "식비", "-500"), "금액은 0보다 커야 합니다: -500"),
+            "0 금액": (("2024-01-01", "expense", "식비", "0"), "금액은 0보다 커야 합니다: 0"),
+            "허용되지 않은 type": (("2024-01-01", "transfer", "식비", "1000"), None),
+            "미등록 카테고리": (("2024-01-01", "expense", "없는카테고리", "1000"), "등록되지 않은 카테고리입니다"),
+        }
+        for label, ((date, type_, category, amount), message) in cases.items():
             with self.subTest(label):
                 try:
-                    code, out, _ = self.run_cli(
+                    code, out, err = self.run_cli(
                         "add", "--date", date, "--type", type_, "--category", category, "--amount", amount
                     )
                 except SystemExit as exc:  # argparse 가 허용되지 않은 --type 을 직접 거부
-                    self.assertNotEqual(exc.code, 0)
+                    self.assertEqual(exc.code, 2)
                     continue
                 self.assertEqual(code, 1)
                 self.assertNotIn("[저장 완료]", out)
+                self.assertIn(f"[오류] {message}", err)
+        self.assertEqual(self._listed_ids(), listed_before)
 
         # 대화형에서는 잘못 입력해도 다시 묻는다. 이 거래(e)는 시나리오에 남긴다(다른 달이라 집계 영향 없음).
         answers = ["2024-13-40", "2024-03-01", "expense", "없는것", "교통", "-1", "1500", "", ""]
@@ -264,6 +295,13 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(err.count("[오류]"), 3)  # 날짜 / 카테고리 / 금액 각각 한 번씩 거부 후 재입력
         self.ids["e"] = self._extract_id(out)
+        # 거부된 값이 아니라 다시 입력한 값으로 저장된다(메모·태그는 비어 있음)
+        self.assertEqual(self._listed_row(self._id("e")), [self._id("e"), "2024-03-01", "expense", "교통", "-1,500"])
+
+        # 카테고리별 사용 건수가 실제 거래 수와 같다(교통 = b, e)
+        saved, actual = self._category_counts()
+        self.assertEqual(saved, actual)
+        self.assertEqual(saved, {"식비": 1, "교통": 2, "월급": 1, "월세": 1})
 
     def test_020_list(self) -> None:
         # 거래일자 최신순: 나중에 등록한 것이 위
