@@ -46,6 +46,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 import unittest
@@ -65,6 +66,15 @@ from budget_app.cli import main
 from budget_app.commands.transaction import cmd_add
 from budget_app.repository import DATE_ENTRY_STRUCT, DateIndex, TransactionRepository
 from budget_app.stores import CategoryStore, RecurringStore
+
+
+# 셸이 따로 해석하지 않는 글자만으로 된 값(한글 포함)은 따옴표 없이 보여준다.
+_SHELL_SAFE = re.compile(r"[\w@%+=:,./-]+")
+
+
+def _shell_quote(value: str) -> str:
+    """로그에 보여줄 값을, 셸에 붙여 넣어도 값 하나로 전달되도록 필요할 때만 따옴표로 감싼다."""
+    return value if _SHELL_SAFE.fullmatch(value) else shlex.quote(value)
 
 
 class _TeeIO(io.StringIO):
@@ -129,7 +139,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
     def run_cli(self, *argv: str) -> tuple[int, str, str]:
         """CLI 를 실행하고 (종료 코드, stdout, stderr) 를 돌려준다(콘솔에도 그대로 보여준다)."""
         console = sys.stdout
-        console.write(f"\n$ python -m budget_app {' '.join(argv)}\n")
+        console.write(f"\n$ python -m budget_app {' '.join(map(_shell_quote, argv))}\n")
         out, err = _TeeIO(console), _TeeIO(console)
         with redirect_stdout(out), redirect_stderr(err):
             code = main(["--data-dir", str(self.data_dir), *argv])
