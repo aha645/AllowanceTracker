@@ -203,7 +203,10 @@ class RequirementChecklistTestCase(unittest.TestCase):
         칸 사이는 공백 두 칸 이상이고 메모 안의 띄어쓰기는 한 칸이므로 그 기준으로 나눈다.
         빈 메모·태그는 줄 끝에서 빠진다.
         """
-        _, out, _ = self.run_cli("list", "--all")
+        return self._row_in(self.run_cli("list", "--all")[1], tx_id)
+
+    def _row_in(self, out: str, tx_id: str) -> list[str]:
+        """거래 표 출력(list·search·recurring apply)에서 그 거래 줄의 칸을 돌려준다."""
         line = self._group(rf"^(\s*\d+\s+{re.escape(tx_id)}\s.*)$", out, re.M)
         return re.split(r"\s{2,}", line.strip())[1:]
 
@@ -250,10 +253,10 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(self._listed_row(self._id("a")),
                          [self._id("a"), "2024-01-05", "expense", "식비", "-12,000", "점심", "외식"])
 
-        # 옵션 방식 등록: 띄어쓰기가 든 메모도 한 값으로 저장된다
+        # 옵션 방식 등록: 띄어쓰기가 든 메모도 한 값으로 저장되고, 금액은 천 단위 쉼표를 붙여도 된다(d)
         self._add("b", "2024-01-10", "expense", "교통", "20000", "지하철")
         self._add("c", "2024-01-25", "income", "월급", "3000000", "1월 급여")
-        self._add("d", "2024-01-31", "expense", "월세", "500000", "1월 월세")
+        self._add("d", "2024-01-31", "expense", "월세", "500,000", "1월 월세")
         self.assertEqual(len({self._id(k) for k in "abcd"}), 4)
         expected_rows = {
             "b": ["2024-01-10", "expense", "교통", "-20,000", "지하철"],
@@ -271,6 +274,10 @@ class RequirementChecklistTestCase(unittest.TestCase):
             "날짜 형식 오류": (("2024-13-40", "expense", "식비", "1000"), "날짜 형식이 올바르지 않습니다"),
             "음수 금액": (("2024-01-01", "expense", "식비", "-500"), "금액은 0보다 커야 합니다: -500"),
             "0 금액": (("2024-01-01", "expense", "식비", "0"), "금액은 0보다 커야 합니다: 0"),
+            "쉼표가 세 자리마다가 아님": (("2024-01-01", "expense", "식비", "1,2,3"),
+                                   "금액의 쉼표 위치가 올바르지 않습니다: '1,2,3'"),
+            "쉼표 뒤 자릿수 부족": (("2024-01-01", "expense", "식비", "600,00"),
+                              "금액의 쉼표 위치가 올바르지 않습니다: '600,00'"),
             "허용되지 않은 type": (("2024-01-01", "transfer", "식비", "1000"), None),
             "미등록 카테고리": (("2024-01-01", "expense", "없는카테고리", "1000"), "등록되지 않은 카테고리입니다"),
         }
@@ -356,12 +363,13 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertIn("데이터 없음", out)
 
     def test_050_budget(self) -> None:
-        code, out, _ = self.run_cli("budget", "set", "--month", "2024-01", "--amount", "600000")
+        code, out, _ = self.run_cli("budget", "set", "--month", "2024-01", "--amount", "600,000")  # 천 단위 쉼표 허용
         self.assertEqual(code, 0)
         self.assertIn("[저장 완료] 2024-01 예산 600,000원", out)
         _, out, _ = self.run_cli("summary", "--month", "2024-01")
         self.assertIn("88.7%", out)  # 532,000 / 600,000
         self.assertNotIn("[경고]", out)
+        self.assertEqual(self._budget_rows(), [["2024-01", "600,000원", "532,000원", "88.7%"]])
 
         code, out, _ = self.run_cli("budget", "set", "--month", "2024-01", "--amount", "500000")
         self.assertIn("덮어썼습니다", out)  # 같은 달은 덮어쓰기
@@ -369,10 +377,19 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertIn("106.4%", out)  # 532,000 / 500,000
         self.assertIn("[경고]", out)
         self.assertIn("32,000원 초과", out)
+        overwritten = [["2024-01", "500,000원", "532,000원", "106.4%", "초과"]]  # 한 줄로 바뀌었다(추가 아님)
+        self.assertEqual(self._budget_rows(), overwritten)
 
         code, _, err = self.run_cli("budget", "set", "--month", "2024-01", "--amount", "0")
         self.assertEqual(code, 1)
-        self.assertIn("[오류]", err)
+        self.assertIn("[오류] 금액은 0보다 커야 합니다: 0", err)
+        self.assertEqual(self._budget_rows(), overwritten)  # 거부된 뒤에도 기존 예산 그대로
+
+    def _budget_rows(self) -> list[list[str]]:
+        """`budget list` 표의 줄마다 칸(월·예산·사용·사용률·상태)을 돌려준다."""
+        code, out, _ = self.run_cli("budget", "list")
+        self.assertEqual(code, 0)
+        return [re.split(r"\s{2,}", line.strip()) for line in re.findall(r"^\d{4}-\d{2}\s.*$", out, re.M)]
 
     def test_060_category(self) -> None:
         self.assertEqual(self.run_cli("category", "add", "--name", "여가")[0], 0)
@@ -389,12 +406,15 @@ class RequirementChecklistTestCase(unittest.TestCase):
         code, _, err = self.run_cli("category", "remove", "--name", "식비")  # 거래에서 사용 중
         self.assertEqual(code, 1)
         self.assertIn("사용 중", err)
+        self.assertEqual(self._category_names(), ["식비", "교통", "월급", "월세", "여가"])  # 식비는 남아 있다
         code, out, _ = self.run_cli("category", "remove", "--name", "여가")  # 미사용
         self.assertEqual(code, 0)
         self.assertIn("[삭제 완료]", out)
+        self.assertEqual(self._category_names(), ["식비", "교통", "월급", "월세"])  # 여가만 빠졌다
         code, _, err = self.run_cli("category", "remove", "--name", "없는카테고리")
         self.assertEqual(code, 1)
         self.assertIn("찾을 수 없습니다", err)
+        self.assertEqual(self._category_names(), ["식비", "교통", "월급", "월세"])
 
         # 카테고리마다 사용 건수가 기록되고, 실제 거래 수와 같다
         saved, actual = self._category_counts()
@@ -406,6 +426,13 @@ class RequirementChecklistTestCase(unittest.TestCase):
         with mock.patch.object(TransactionRepository, "iter_latest_transactions",
                                side_effect=AssertionError("훑으면 안 됨")):
             self.assertEqual(self.run_cli("category", "remove", "--name", "미사용")[0], 0)
+        self.assertNotIn("미사용", self._category_names())
+
+    def _category_names(self) -> list[str]:
+        """`category list` 표의 카테고리 이름을 위에서 아래 순서로 돌려준다."""
+        code, out, _ = self.run_cli("category", "list")
+        self.assertEqual(code, 0)
+        return re.findall(r"^\d+\s+(\S+)\s", out, re.M)
 
     def test_070_update(self) -> None:
         # 날짜/타입/카테고리는 엔터(유지), 금액 12,000 → 15,000, 메모는 '-'(비움), 태그는 엔터(유지)
@@ -426,13 +453,26 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertIn("TX-999999", err)
 
     def test_080_delete(self) -> None:
+        # 터미널에서 --yes 없이 실행하면 확인을 묻고, N 이면 지우지 않는다
+        listed_before = self._listed_ids()
+        with mock.patch.object(sys.stdin, "isatty", return_value=True), self.fake_input(["N"]):
+            code, out, _ = self.run_cli("delete", "--id", self._id("b"))
+        self.assertEqual(code, 0)
+        self.assertIn("[안내] 삭제를 취소했습니다.", out)
+        self.assertEqual(self._listed_ids(), listed_before)
+
+        self.assertEqual(self._category_counts()[0]["교통"], 2)  # b, e
         code, out, _ = self.run_cli("delete", "--id", self._id("b"), "--yes")
         self.assertEqual(code, 0)
         self.assertIn("[삭제 완료]", out)
         _, out, _ = self.run_cli("list")
         self.assertFalse(self._has(out, self._id("b")))
+        self.assertEqual(self._listed_ids(), [i for i in listed_before if i != self._id("b")])  # b 만 빠졌다
         _, out, _ = self.run_cli("summary", "--month", "2024-01")
         self.assertIn("총 지출  515,000원", out)  # 교통 20,000 제외
+        saved, actual = self._category_counts()  # 삭제한 만큼 사용 건수도 준다
+        self.assertEqual(saved, actual)
+        self.assertEqual(saved["교통"], 1)
 
         for target in (self._id("b"), "TX-999999"):  # 이미 삭제한 id, 존재한 적 없는 id
             with self.subTest(target):
@@ -450,13 +490,26 @@ class RequirementChecklistTestCase(unittest.TestCase):
             "2024-02-11,expense,식비,-100,,\n",  # 음수 금액 → skip
             encoding="utf-8",
         )
+        listed_before = self._listed_ids()
         code, out, _ = self.run_cli("import", "--from", str(source))
         self.assertEqual(code, 0)
         self.assertIn("imported=2, skipped=2", out)
+        self.assertRegex(out, r"(?m)^\s*4\s+등록되지 않은 카테고리입니다: '없는카테고리'$")  # 건너뛴 행 번호와 사유
+        self.assertRegex(out, r"(?m)^\s*5\s+금액은 0보다 커야 합니다: -100$")
+
+        # 정상 2행만 들어왔고, 쉼표가 든 메모·여러 태그도 그대로다
+        imported = [i for i in self._listed_ids() if i not in listed_before]
+        self.assertEqual(len(imported), 2)
+        rows = sorted(self._listed_row(i)[1:] for i in imported)
+        self.assertEqual(rows, [
+            ["2024-02-05", "expense", "식비", "-8,000", "점심, 회사 근처", "외식,점심"],
+            ["2024-02-25", "income", "월급", "+3,000,000", "2월 급여"],
+        ])
 
         _, out, _ = self.run_cli("summary", "--month", "2024-02")  # 가져온 데이터가 집계에 반영
         self.assertIn("총 수입  3,000,000원", out)
         self.assertIn("총 지출  8,000원", out)
+        listed_before = self._listed_ids()
 
         # 파일 자체를 못 읽으면(뒤쪽에 UTF-8 이 아닌 바이트 / 닫히지 않은 따옴표) 앞쪽 정상 행도 저장하지 않는다
         valid_rows = "".join(f"2024-02-{d:02d},expense,식비,1000,,\n" for d in range(1, 29)) * 20
@@ -486,6 +539,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("imported=0, skipped=25", out)
         self.assertIn("... 외 5건", out)
+        self.assertEqual(self._listed_ids(), listed_before)  # 읽지 못한 파일·잘못된 행만 있는 파일은 아무것도 추가하지 않음
 
         # 메모리 부족도 스택트레이스 없이 [오류]/[힌트] 로 알린다
         with mock.patch.object(TransactionRepository, "append_transactions", side_effect=MemoryError):
@@ -494,6 +548,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertIn("[오류] 메모리가 부족", err)
         self.assertIn("[힌트]", err)
         self.assertNotIn("Traceback", err)
+        self.assertEqual(self._listed_ids(), listed_before)  # 거래는 하나도 저장되지 않음
 
     def test_095_export(self) -> None:
         target = self.data_dir / "export_2024_02.csv"
@@ -716,15 +771,22 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("[저장 완료]", out)
         self.ids["rule"] = self._group(r"id=(RC-\d+)", out)
-        self.assertIn(self._id("rule"), self.run_cli("recurring", "list")[1])
+        rule_line = self._group(rf"^({re.escape(self._id('rule'))}\s.*)$", self.run_cli("recurring", "list")[1], re.M)
+        self.assertEqual(re.split(r"\s{2,}", rule_line.strip()),
+                         [self._id("rule"), "매월 31일", "income", "월급", "3,000,000원", "월급(반복)", "0"])
 
         code, out, _ = self.run_cli("recurring", "apply", "--month", "2024-02")
         self.assertIn("생성 1건", out)
-        self.assertIn("2024-02-29", out)  # 31일 규칙 → 윤년 2월 말일로 보정
+        self.ids["applied"] = self._group(r"^\s*\d+\s+(TX-\d+)\s", out, re.M)
+        # 31일 규칙 → 윤년 2월 말일로 보정된 거래가 실제로 저장되어 목록에 나온다
+        self.assertEqual(self._listed_row(self._id("applied")),
+                         [self._id("applied"), "2024-02-29", "income", "월급", "+3,000,000", "월급(반복)"])
 
+        listed_before = self._listed_ids()
         code, out, _ = self.run_cli("recurring", "apply", "--month", "2024-02")  # 같은 달 재적용은 건너뜀
         self.assertIn("생성 0건", out)
         self.assertIn("건너뜀 1건", out)
+        self.assertEqual(self._listed_ids(), listed_before)
 
         # 거래를 저장한 뒤 규칙에 "적용함"을 기록하기 전에 꺼져도, 다시 apply 할 때 중복으로 만들지 않는다
         def april_ids() -> list[str]:

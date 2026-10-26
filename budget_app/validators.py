@@ -5,9 +5,13 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from .models import DATE_FORMAT, MONTH_FORMAT, TRANSACTION_TYPES, ValidationError
+
+# 쉼표는 천 단위(세 자리마다)로 찍은 것만 받는다. 1,2,3 이나 600,00 같은 오타가 다른 금액으로 저장되지 않게 한다.
+_GROUPED_AMOUNT = re.compile(r"[+-]?\d{1,3}(?:,\d{3})+")
 
 
 def validate_date(value: str) -> str:
@@ -60,8 +64,15 @@ def validate_type(value: str) -> str:
 
 
 def validate_amount(value: str | int) -> int:
-    """0보다 큰 정수만 허용한다(쉼표 포함 입력 허용)."""
-    text = str(value).strip().replace(",", "")
+    """0보다 큰 정수만 허용한다(천 단위 쉼표 입력 허용: 600000 / 600,000)."""
+    text = str(value).strip()
+    if "," in text:
+        if not _GROUPED_AMOUNT.fullmatch(text):
+            raise ValidationError(
+                f"금액의 쉼표 위치가 올바르지 않습니다: '{value}'",
+                "쉼표는 세 자리마다 넣거나 빼고 입력하세요. 예: 600,000 또는 600000",
+            )
+        text = text.replace(",", "")
     try:
         amount = int(text)
     except ValueError as exc:

@@ -39,26 +39,25 @@ python -m unittest tests.test_requirement_checklist -v -k 000 -k 010 -k 020 -k 0
 
 `-k 000` 의 `000` 은 아래 함수 이름의 번호입니다. `-k` 는 이름에 그 글자가 들어간 테스트만 실행합니다. 테스트는 번호 순서대로 실행되고 앞 테스트가 `tests/data/` 에 만든 데이터를 뒤 테스트가 이어받으므로, 일부만 실행할 때도 `000` 부터 함께 지정하세요.
 
-테스트는 실행하는 명령을 `$ python -m budget_app ...` 줄로 보여줍니다. 띄어쓰기·괄호·`&`·`|` 같은 셸 특수문자가 든 값은 `--memo '1월 급여'`, `--memo '월급(반복)'` 처럼 작은따옴표로 감싸 보여주므로, 그 줄을 터미널에 붙여 넣어도 같은 인자로 실행됩니다(`월급` 처럼 특수문자가 없는 값은 그대로). 다만 테스트는 `--data-dir tests/data` 로 실행하는데 이 옵션은 화면에 보이지 않으므로, 붙여 넣으면 현재 폴더의 `data/` 에 저장됩니다. `mock` 으로 디스크 실패·강제 종료를 흉내 내는 단계는 붙여 넣어도 재현되지 않습니다.
 
 | `-k` | 함수 이름 | 테스트 내용 |
 |---|---|---|
 | `000` | `test_000_reset_data` | `tests/data/` 를 비워 데이터를 처음 상태로 만든다 |
-| `010` | `test_010_add` | 카테고리가 없으면 `add` 를 막는지, 카테고리 4개 등록 후 `category list` 로 확인, 대화형·옵션 방식으로 거래 등록 후 `list` 에서 날짜·타입·카테고리·금액·메모(띄어쓰기 포함)·태그가 입력한 그대로인지, 날짜·음수·0 금액·type·미등록 카테고리를 사유와 함께 거부하고 거래 수가 그대로인지, 대화형에서 잘못 입력하면 다시 묻고 고친 값으로 저장되는지, 카테고리별 사용 건수 |
+| `010` | `test_010_add` | 카테고리가 없으면 `add` 를 막는지, 카테고리 4개 등록 후 `category list` 로 확인, 대화형·옵션 방식으로 거래 등록 후 `list` 에서 날짜·타입·카테고리·금액·메모(띄어쓰기 포함)·태그가 입력한 그대로인지, 날짜·음수·0 금액·type·미등록 카테고리·위치가 틀린 쉼표(`1,2,3`·`600,00`)를 사유와 함께 거부하고 거래 수가 그대로인지, 천 단위 쉼표 금액(`500,000`) 저장, 대화형에서 잘못 입력하면 다시 묻고 고친 값으로 저장되는지, 카테고리별 사용 건수 |
 | `020` | `test_020_list` | 거래일자 최신순 출력, `--limit 2` 로 최근 2건만, `--limit` 과 `--all` 을 함께 쓰면 거부 |
 | `030` | `test_030_search` | 기간·카테고리·타입·메모 키워드·태그 조건과 여러 조건의 AND 결합, 조건이 하나도 없으면 오류 |
 | `040` | `test_040_summary` | 2024-01 총 수입·총 지출·잔액, 지출 큰 순서 TOP 2, 거래가 없는 달은 "데이터 없음" |
-| `050` | `test_050_budget` | 예산 설정과 사용률(88.7%), 같은 달 덮어쓰기와 초과 경고(106.4%, 32,000원 초과), 0원 예산 거부 |
-| `060` | `test_060_category` | 카테고리 추가·중복 차단·목록, 사용 중인 카테고리 삭제 거부, 미사용 삭제, 없는 이름 오류, 사용 건수가 실제 거래 수와 같은지, 건수 0 이면 거래를 훑지 않고 바로 삭제 |
+| `050` | `test_050_budget` | 예산 설정(`600,000` 처럼 쉼표 입력)과 사용률(88.7%), 같은 달 덮어쓰기와 초과 경고(106.4%, 32,000원 초과), 0원 예산 거부, 매 단계 `budget list` 로 저장된 예산이 한 줄이고 거부 뒤에도 그대로인지 |
+| `060` | `test_060_category` | 카테고리 추가·중복 차단·목록, 사용 중인 카테고리 삭제 거부, 미사용 삭제, 없는 이름 오류(삭제·거부 뒤마다 `category list` 로 남은 목록 확인), 사용 건수가 실제 거래 수와 같은지, 건수 0 이면 거래를 훑지 않고 바로 삭제 |
 | `070` | `test_070_update` | 대화형 수정(엔터는 유지, `-` 는 비움)으로 금액·메모 변경 후 검색·요약에 반영, 없는 id 오류 |
-| `080` | `test_080_delete` | 삭제 후 목록·요약에서 빠지는지, 이미 삭제한 id·없는 id 오류 |
-| `090` | `test_090_import` | CSV 가져오기(정상 2건, 잘못된 행 2건 건너뜀), 읽을 수 없는 파일(UTF-8 아님·닫히지 않은 따옴표)은 아무것도 저장하지 않음, 오류 사유 20건 상한, 메모리 부족 안내 |
+| `080` | `test_080_delete` | `--yes` 없이 터미널에서 실행하면 확인을 묻고 N 이면 지우지 않는지, 삭제 후 목록에서 그 거래만 빠지고 요약·카테고리 사용 건수에 반영되는지, 이미 삭제한 id·없는 id 오류 |
+| `090` | `test_090_import` | CSV 가져오기(정상 2건이 쉼표 든 메모·여러 태그까지 그대로 저장, 잘못된 행 2건은 행 번호·사유와 함께 건너뜀), 읽을 수 없는 파일(UTF-8 아님·닫히지 않은 따옴표)은 아무것도 저장하지 않음, 오류 사유 20건 상한, 메모리 부족 안내, 실패한 import 뒤 거래 수가 그대로인지 |
 | `095` | `test_095_export` | 월·기간 내보내기와 고정 헤더, 쉼표가 든 메모 보존, 삭제한 거래 제외, 도중에 멈춰도 원래 파일 유지, 조건 없으면 오류, 저장 파일 3개 존재 |
 | `100` | `test_100_applied_logging_and_exit_codes` | `--verbose` 일 때만 로그·실행 시간 출력, 데코레이터가 함수 이름·설명 보존, 종료 코드 0·1·130 과 스택트레이스 미노출 |
 | `110` | `test_110_applied_table_format` | 표 머리글·구분선, 수입 `+`·지출 `-` 부호와 천 단위 구분, 예산 막대 |
 | `120` | `test_120_applied_atomic_storage` | 파일 교체 실패 시 원본 유지, update·delete 때 파일이 바뀌는 방식, 카테고리 건수가 실제보다 적어지지 않는지와 다시 세기, 덜 써진 위치 칸 조각 정리, 중단된 compact 되돌리기·마무리 |
 | `130` | `test_130_applied_backup` | `backup` 이 날짜·시각 이름의 폴더에 저장 파일 3개를 그대로 복사하는지 |
-| `140` | `test_140_applied_recurring` | 반복 거래 추가·목록, 31일 규칙이 윤년 2월 29일로 보정, 같은 달 재적용 건너뜀, 거래 저장 뒤 기록 전에 멈춰도 중복 생성 안 함, 규칙 삭제 |
+| `140` | `test_140_applied_recurring` | 반복 거래 추가 후 `recurring list` 의 규칙 내용, 31일 규칙이 윤년 2월 29일 거래로 실제 저장되는지, 같은 달 재적용 건너뜀(거래 수 그대로), 거래 저장 뒤 기록 전에 멈춰도 중복 생성 안 함, 규칙 삭제 |
 | `150` | `test_150_applied_date_index` | 옛 날짜 import·add 가 날짜 순서 위치에 들어가는지, 날짜 수정·삭제 반영, `--limit` 만큼만 읽기, compact·파일 삭제 후 재생성, 저장·import 중단 복구, 날짜 인덱스 손상 감지 |
 
 ## 2. 10대 기능 실행 결과
@@ -117,7 +116,7 @@ $ python -m budget_app add --date 2024-01-10 --type expense --category 교통 --
 $ python -m budget_app add --date 2024-01-25 --type income --category 월급 --amount 3000000 --memo "1월 급여"
 [저장 완료] id=TX-3
 
-$ python -m budget_app add --date 2024-01-31 --type expense --category 월세 --amount 500000 --memo "1월 월세"
+$ python -m budget_app add --date 2024-01-31 --type expense --category 월세 --amount 500,000 --memo "1월 월세"
 [저장 완료] id=TX-4
 
 $ python -m budget_app add --date 2024-13-40 --type expense --category 식비 --amount 1000
@@ -128,6 +127,11 @@ $ python -m budget_app add --date 2024-13-40 --type expense --category 식비 --
 $ python -m budget_app add --date 2024-01-01 --type expense --category 식비 --amount -500
 [오류] 금액은 0보다 커야 합니다: -500
 [힌트] 지출/수입 구분은 --type 으로 하고, 금액은 항상 양수로 입력하세요.
+(종료 코드 1)
+
+$ python -m budget_app add --date 2024-01-01 --type expense --category 식비 --amount 1,2,3
+[오류] 금액의 쉼표 위치가 올바르지 않습니다: '1,2,3'
+[힌트] 쉼표는 세 자리마다 넣거나 빼고 입력하세요. 예: 600,000 또는 600000
 (종료 코드 1)
 
 $ python -m budget_app add --date 2024-01-01 --type transfer --category 식비 --amount 1000
@@ -286,10 +290,10 @@ $ python -m budget_app summary --month 2023-12
 <details>
 <summary><b>5. budget — 예산 설정/조회</b></summary>
 
-예산 설정 → summary 사용률 → 덮어쓰기 → 초과 경고 → 0원은 오류
+예산 설정 → summary 사용률 → `budget list` 로 저장 확인 → 덮어쓰기 → 초과 경고 → 0원은 오류 → 거부 뒤에도 예산 그대로
 
 ```text
-$ python -m budget_app budget set --month 2024-01 --amount 600000
+$ python -m budget_app budget set --month 2024-01 --amount 600,000
 [저장 완료] 2024-01 예산 600,000원
 
 $ python -m budget_app summary --month 2024-01 --top 1
@@ -307,6 +311,13 @@ $ python -m budget_app summary --month 2024-01 --top 1
   예산     600,000원
   사용     532,000원 (88.7%) [##################..]
   잔여     68,000원
+
+$ python -m budget_app budget list
+월            예산       사용  사용률  상태
+-------  ---------  ---------  ------  ----
+2024-01  600,000원  532,000원   88.7%
+
+[완료] 1개
 
 $ python -m budget_app budget set --month 2024-01 --amount 500000
 [저장 완료] 2024-01 예산 500,000원
@@ -346,7 +357,7 @@ $ python -m budget_app budget list
 <details>
 <summary><b>6. category — 카테고리 관리</b></summary>
 
-등록 / 중복 차단 / 목록 / 사용 중인 카테고리는 삭제 차단 / 미사용 삭제 / 없는 카테고리
+등록 / 중복 차단 / 목록 / 사용 중인 카테고리는 삭제 차단 / 미사용 삭제 / 없는 카테고리 (삭제를 시도할 때마다 `category list` 로 남은 목록 확인)
 
 ```text
 $ python -m budget_app category add --name 여가
@@ -373,8 +384,29 @@ $ python -m budget_app category remove --name 식비
 [힌트] search --category "식비" 로 확인 후, 해당 거래를 update/delete 한 뒤 다시 시도하세요.
 (종료 코드 1)
 
+$ python -m budget_app category list
+#  카테고리  등록일시
+-  --------  -------------------
+1  식비      2024-02-01T09:00:00
+2  교통      2024-02-01T09:00:00
+3  월급      2024-02-01T09:00:00
+4  월세      2024-02-01T09:00:00
+5  여가      2024-02-01T09:00:00
+
+[완료] 5개
+
 $ python -m budget_app category remove --name 여가
 [삭제 완료] 카테고리 '여가'
+
+$ python -m budget_app category list
+#  카테고리  등록일시
+-  --------  -------------------
+1  식비      2024-02-01T09:00:00
+2  교통      2024-02-01T09:00:00
+3  월급      2024-02-01T09:00:00
+4  월세      2024-02-01T09:00:00
+
+[완료] 4개
 
 $ python -m budget_app category remove --name 없는카테고리
 [오류] 카테고리 '없는카테고리' 을(를) 찾을 수 없습니다.
@@ -442,9 +474,16 @@ $ python -m budget_app update --id TX-999999
 <details>
 <summary><b>8. delete — 거래 삭제</b></summary>
 
-삭제 → 목록/요약에서 제외 → 이미 삭제했거나 없는 id 는 오류
+`--yes` 없이 실행하면 확인 질문(N 이면 취소) → 삭제 → 목록/요약에서 제외 → 이미 삭제했거나 없는 id 는 오류
 
 ```text
+$ python -m budget_app delete --id TX-2
+#  id    날짜        타입     카테고리     금액  메모    태그
+-  ----  ----------  -------  --------  -------  ------  ----
+1  TX-2  2024-01-10  expense  교통      -20,000  지하철
+위 거래를 삭제할까요? (y/N): N
+[안내] 삭제를 취소했습니다.
+
 $ python -m budget_app delete --id TX-2 --yes
 [삭제 완료] id=TX-2 (2024-01-10 교통 20,000원)
 [안내] 삭제된 id 는 재사용되지 않습니다(번호 gap 은 정상입니다).
@@ -491,7 +530,7 @@ $ python -m budget_app delete --id TX-999999 --yes
 <details>
 <summary><b>9. import — CSV 가져오기</b></summary>
 
-유효한 행만 등록하고 잘못된 행은 사유와 함께 건너뜀 → 요약에 반영
+유효한 행만 등록하고 잘못된 행은 사유와 함께 건너뜀 → `list` 에서 쉼표 든 메모·여러 태그까지 그대로인지 확인 → 요약에 반영
 
 ```text
 $ cat > import.csv <<'EOF'
@@ -510,6 +549,18 @@ $ python -m budget_app import --from import.csv
 --  --------------------------------------------
  4  등록되지 않은 카테고리입니다: '없는카테고리'
  5  금액은 0보다 커야 합니다: -100
+
+$ python -m budget_app list --all
+#  id    날짜        타입     카테고리        금액  메모             태그
+-  ----  ----------  -------  --------  ----------  ---------------  ---------
+1  TX-5  2024-03-01  expense  교통          -1,500
+2  TX-7  2024-02-25  income   월급      +3,000,000  2월 급여
+3  TX-6  2024-02-05  expense  식비          -8,000  점심, 회사 근처  외식,점심
+4  TX-4  2024-01-31  expense  월세        -500,000  1월 월세
+5  TX-3  2024-01-25  income   월급      +3,000,000  1월 급여
+6  TX-1  2024-01-05  expense  식비         -15,000                   외식
+
+[완료] 6건 출력
 
 $ python -m budget_app summary --month 2024-02 --top 1
 [2024-02 요약]
@@ -611,7 +662,7 @@ $ python -m budget_app --verbose list --limit 1
 | `date` | ✅ | `YYYY-MM-DD` |
 | `type` | ✅ | `income` / `expense` |
 | `category` | ✅ | 이미 등록된 카테고리 |
-| `amount` | ✅ | 양의 정수 |
+| `amount` | ✅ | 양의 정수. 천 단위 쉼표 허용(`"600,000"`, CSV 에서는 따옴표로 감쌈) |
 | `memo` | ❌ | 문자열 |
 | `tags` | ❌ | 쉼표(,) 구분 문자열 |
 
@@ -655,7 +706,7 @@ transactions.jsonl
 <details>
 <summary><b>보너스 — 반복 내역</b></summary>
 
-매월 31일 규칙 등록 → 2월에 적용(말일 2024-02-29 로 보정) → 같은 달 재적용은 건너뜀 → 삭제
+매월 31일 규칙 등록 → 2월에 적용(말일 2024-02-29 로 보정) → `list` 에 실제로 저장됐는지 확인 → 같은 달 재적용은 건너뜀 → 삭제
 
 ```text
 $ python -m budget_app recurring add --day 31 --type income --category 월급 --amount 3000000 --memo "월급(반복)"
@@ -673,6 +724,19 @@ $ python -m budget_app recurring apply --month 2024-02
 #  id    날짜        타입    카테고리        금액  메모        태그
 -  ----  ----------  ------  --------  ----------  ----------  ----
 1  TX-8  2024-02-29  income  월급      +3,000,000  월급(반복)
+
+$ python -m budget_app list --all
+#  id    날짜        타입     카테고리        금액  메모             태그
+-  ----  ----------  -------  --------  ----------  ---------------  ---------
+1  TX-5  2024-03-01  expense  교통          -1,500
+2  TX-8  2024-02-29  income   월급      +3,000,000  월급(반복)
+3  TX-7  2024-02-25  income   월급      +3,000,000  2월 급여
+4  TX-6  2024-02-05  expense  식비          -8,000  점심, 회사 근처  외식,점심
+5  TX-4  2024-01-31  expense  월세        -500,000  1월 월세
+6  TX-3  2024-01-25  income   월급      +3,000,000  1월 급여
+7  TX-1  2024-01-05  expense  식비         -15,000                   외식
+
+[완료] 7건 출력
 
 $ python -m budget_app recurring apply --month 2024-02
 [완료] 2024-02 반복 거래 생성 0건, 이미 적용되어 건너뜀 1건
