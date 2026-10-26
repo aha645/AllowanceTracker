@@ -65,11 +65,21 @@ def prompt_until_valid(
     while True:
         raw = input(label)
         if not raw.strip() and allow_blank and default is not None:
+            _echo_default(label, default)
             return default
         try:
             return validator(raw)
         except ValidationError as exc:
             print_error(exc.message, exc.hint)
+
+
+def _echo_default(label: str, value: object) -> None:
+    """엔터로 기본값을 고르면, 터미널에서는 방금 입력한 줄을 `프롬프트 + 기본값` 으로 다시 쓴다."""
+    text = str(value)
+    if not text or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return  # 파이프·리다이렉트 입출력(테스트 포함)에는 터미널 제어 문자를 섞지 않는다
+    # \033[F: 커서를 윗줄 맨 앞으로, \033[K: 그 줄을 지움
+    print(f"\033[F\033[K{label}{text}")
 
 
 def render_transactions(rows: Iterable[Transaction]) -> int:

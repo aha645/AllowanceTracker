@@ -64,8 +64,10 @@ if _PROJECT_ROOT not in sys.path:
 from budget_app import repository
 from budget_app.cli import main
 from budget_app.commands.transaction import cmd_add
+from budget_app.console import prompt_until_valid
 from budget_app.repository import DATE_ENTRY_STRUCT, DateIndex, TransactionRepository
 from budget_app.stores import CategoryStore, RecurringStore
+from budget_app.validators import validate_type
 
 
 # 셸이 따로 해석하지 않는 글자만으로 된 값(한글 포함)은 따옴표 없이 보여준다.
@@ -75,6 +77,17 @@ _SHELL_SAFE = re.compile(r"[\w@%+=:,./-]+")
 def _shell_quote(value: str) -> str:
     """로그에 보여줄 값을, 셸에 붙여 넣어도 값 하나로 전달되도록 필요할 때만 따옴표로 감싼다."""
     return value if _SHELL_SAFE.fullmatch(value) else shlex.quote(value)
+
+
+class _FakeTerminal(io.StringIO):
+    """출력을 모으면서 터미널인지 여부(isatty)를 정해 둘 수 있는 가짜 stdout."""
+
+    def __init__(self, is_terminal: bool) -> None:
+        super().__init__()
+        self._is_terminal = is_terminal
+
+    def isatty(self) -> bool:
+        return self._is_terminal
 
 
 class _TeeIO(io.StringIO):
@@ -252,6 +265,18 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.ids["a"] = self._extract_id(out)
         self.assertEqual(self._listed_row(self._id("a")),
                          [self._id("a"), "2024-01-05", "expense", "식비", "-12,000", "점심", "외식"])
+
+        # 엔터로 기본값을 고르면 터미널에서는 입력 줄을 `프롬프트 + 기본값` 으로 다시 써서 보여주고,
+        # 파이프·리다이렉트 입출력에서는 제어 문자를 섞지 않는다
+        label = "타입 (income/expense, 엔터=expense): "
+        for is_terminal, expected in ((True, f"\033[F\033[K{label}expense\n"), (False, "")):
+            with self.subTest(터미널=is_terminal):
+                shown = _FakeTerminal(is_terminal)
+                with mock.patch("builtins.input", return_value=""), \
+                        mock.patch.object(sys.stdin, "isatty", return_value=is_terminal), redirect_stdout(shown):
+                    value = prompt_until_valid(label, validate_type, default="expense", allow_blank=True)
+                self.assertEqual(value, "expense")
+                self.assertEqual(shown.getvalue(), expected)
 
         # 옵션 방식 등록: 띄어쓰기가 든 메모도 한 값으로 저장되고, 금액은 천 단위 쉼표를 붙여도 된다(d)
         self._add("b", "2024-01-10", "expense", "교통", "20000", "지하철")
