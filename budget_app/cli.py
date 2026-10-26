@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NoReturn
 
 from . import __version__
 from .commands.category import cmd_category_add, cmd_category_list, cmd_category_remove
@@ -188,7 +188,7 @@ class HintArgumentParser(argparse.ArgumentParser):
     서브커맨드 파서도 부모와 같은 클래스로 만들어지므로 모든 커맨드에 적용된다.
     """
 
-    def error(self, message: str):  # type: ignore[override]
+    def error(self, message: str) -> NoReturn:
         print_error(message, f"`{self.prog} --help` 로 사용법과 허용 값을 확인하세요.")
         self.exit(2)
 

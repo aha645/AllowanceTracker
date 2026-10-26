@@ -3,6 +3,7 @@
 모듈 구성:
     models.py      데이터 모델(dataclass)과 커스텀 예외
     repository.py  transactions.jsonl / transactions.idx / transactions.date.idx 저장 엔진
+    durability.py  fsync·임시 파일 교체로 꺼져도 안전하게 확정, 위치 칸 되돌리기 기록(SlotUndo)
     stores.py      categories / budgets / recurring JSONL 저장소
     validators.py  입력 검증/정규화 함수
     services.py    거래·예산·반복 규칙 비즈니스 로직
