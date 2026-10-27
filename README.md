@@ -134,7 +134,7 @@ $ python -m budget_app add --date 2024-01-01 --type expense --category 식비 --
 (종료 코드 1)
 
 $ python -m budget_app add --date 2024-01-01 --type transfer --category 식비 --amount 1000
-[오류] argument --type: invalid choice: 'transfer' (choose from income, expense)
+[오류] argument --type: invalid choice: 'transfer' (choose from 'income', 'expense')
 [힌트] `python -m budget_app add --help` 로 사용법과 허용 값을 확인하세요.
 (종료 코드 2)
 
@@ -630,7 +630,7 @@ $ python -m budget_app delete --id TX-999999 --yes
 (종료 코드 1)
 
 $ python -m budget_app add --type transfer
-[오류] argument --type: invalid choice: 'transfer' (choose from income, expense)
+[오류] argument --type: invalid choice: 'transfer' (choose from 'income', 'expense')
 [힌트] `python -m budget_app add --help` 로 사용법과 허용 값을 확인하세요.
 (종료 코드 2)
 
@@ -872,7 +872,7 @@ $ python -m budget_app compact
 [완료] compact
 항목                 이전  이후
 -----------------  ------  ----
-로그 크기          1,511B  781B
+로그 크기          1,537B  807B
 살아있는 거래         6건   6건
 슬롯 수(=최대 id)       9     9
 
