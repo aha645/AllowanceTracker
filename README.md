@@ -25,7 +25,7 @@ data/
 └── recurring.jsonl          반복 거래 규칙 (보너스)
 ```
 
-- 구성: `cli`(명령 연결) → `commands/`(기능별 핸들러) → `services`(규칙) → `transaction_store`·`stores`(파일 저장), 공통 처리는 데코레이터 `@command`. 모듈별 역할은 4부 "코드 구성" 참고.
+- 구성: `cli`(명령 연결) → `commands/`(기능별 핸들러) → `services`·`file_services`(규칙) → `transaction_store`·`stores`(파일 저장), 공통 처리는 데코레이터 `@command`. 모듈별 역할은 4부 "코드 구성" 참고.
 
 ### 테스트 실행
 
@@ -1084,7 +1084,7 @@ python tools/bench_large.py --n 300000   # 건수 지정 (100만 건은 몇 분 
 | `import` (빈 저장소에 N건) | 6.51s · 23MB | 19.19s · 31MB | 63.42s · 61MB | 병목 ① |
 | `search --q 없는말` (기간 조건 없음) | 1.70s · 16MB | 4.90s · 16MB | 15.95s · 16MB | **병목 ②** |
 | `export` 전체 기간 | 2.12s · 16MB | 6.24s · 16MB | 20.40s · 16MB | **병목 ②** |
-| `compact` | 1.69s · 20MB | 5.03s · 27MB | 15.85s · 49MB | 시간은 건수에 비례, 메모리는 작음 |
+| `compact` | 1.69s · 20MB | 5.03s · 27MB | 15.85s · 49MB | 병목 ④ |
 
 | 파일 | 10만 건 | 30만 건 | 100만 건 |
 |---|---:|---:|---:|
