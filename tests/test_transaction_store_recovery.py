@@ -308,6 +308,12 @@ repo.update_transaction(repo.get_transaction(2).replace_fields(date="2023-01-01"
         with self.assertRaises(StorageError):
             self.open_repo()
         self.assertEqual(self.repo.idx_path.read_bytes(), before)
+        # CLI 에서는 저장소를 여는 중의 오류도 스택트레이스 없이 [오류]/[힌트] 로 보이고 종료 코드 1 이다
+        proc = subprocess.run([sys.executable, "-m", "budget_app", "--data-dir", str(self.folder), "list"],
+                              cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("[오류] 거래 슬롯 복구 기록이 손상되었습니다.", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
 
     def test_slot_journal_with_wrong_hash_fails_closed(self) -> None:
         # 길이(72바이트)·형식 표시·범위는 맞고 원래 슬롯 1바이트만 바뀐 기록은 SHA-256 검사로만 걸러진다

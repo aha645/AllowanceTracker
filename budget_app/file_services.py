@@ -115,12 +115,24 @@ class CsvService:
                     '메모 등에 연 따옴표(")가 닫혔는지 확인하세요. 아무것도 저장하지 않았습니다.',
                 ) from exc
 
+    def _inside_data_dir(self, target: Path) -> bool:
+        """target 이 데이터 폴더 안인지. 경로 문자열이 아니라 실제 폴더가 같은지로 비교한다.
+
+        문자열로 비교하면 대소문자를 구분하지 않는 파일 시스템(macOS 기본)에서 `DATA/...` 가 `data/` 와
+        다른 경로로 보여 막지 못했다. 그래서 이미 있는 상위 폴더 중 데이터 폴더와 같은 폴더가 있는지 본다.
+        """
+        if not self.data_dir.exists():
+            return False
+        return any(
+            folder.exists() and folder.samefile(self.data_dir) for folder in target.absolute().parents
+        )
+
     def export_csv(self, path: Path, transactions: Iterable[Transaction]) -> int:
         """거래를 CSV 로 내보내고 건수를 돌려준다."""
         target = Path(path)
         # 데이터 폴더 안으로 내보내면 transactions.jsonl 같은 저장 파일이나 백업을 CSV 로 덮어쓸 수 있다.
         # 예전에는 그대로 덮어써서 위치 인덱스와 어긋난 저장소가 모든 명령에서 오류로 멈췄다.
-        if target.resolve().is_relative_to(self.data_dir.resolve()):
+        if self._inside_data_dir(target):
             raise ValidationError(
                 f"데이터 폴더 안에는 내보낼 수 없습니다: {target}",
                 f"저장 파일이나 백업을 덮어쓸 수 있습니다. --out 에 데이터 폴더({self.data_dir}) 밖의 경로를 지정하세요.",

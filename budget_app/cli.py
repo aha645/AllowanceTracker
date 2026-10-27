@@ -27,7 +27,7 @@ from .commands.summary import cmd_summary
 from .commands.transaction import cmd_add, cmd_delete, cmd_list, cmd_search, cmd_update
 from .console import print_error
 from .context import AppContext
-from .decorators import EXIT_ERROR, EXIT_OK, configure_logging
+from .decorators import EXIT_ERROR, EXIT_OK, configure_logging, handle_errors
 from .models import TRANSACTION_TYPES
 
 DEFAULT_DATA_DIR = Path("./data")
@@ -245,6 +245,16 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return EXIT_OK
 
+    return _run(args)
+
+
+@handle_errors
+def _run(args: argparse.Namespace) -> int:
+    """저장소를 열고(시작 시 복구 포함) 명령을 실행한다.
+
+    여는 중의 오류(복구 기록 손상, 읽을 수 없는 categories.jsonl 등)는 명령 핸들러 밖에서 나므로,
+    여기에도 @handle_errors 를 붙여야 스택트레이스 대신 [오류]/[힌트] 로 보인다.
+    """
     ctx = AppContext.create(Path(args.data_dir))
     for note in ctx.recovered:  # 지난 실행이 중간에 꺼져 시작할 때 자동으로 바로잡은 것
         print(f"[안내] {note}")

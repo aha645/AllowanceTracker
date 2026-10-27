@@ -8,7 +8,6 @@ from ..console import print_budget_usage
 from ..context import AppContext
 from ..decorators import EXIT_OK, command
 from ..formatter import format_amount, format_table
-from ..models import ValidationError
 from ..services import BudgetUsage
 from ..validators import validate_month
 
@@ -17,9 +16,7 @@ from ..validators import validate_month
 def cmd_summary(ctx: AppContext, args: argparse.Namespace) -> int:
     """월별 요약: 총 수입/지출/잔액 + 카테고리별 지출 TOP N + 예산 사용률."""
     month = validate_month(args.month)
-    top = args.top
-    if top < 1:
-        raise ValidationError(f"--top 은 1 이상이어야 합니다: {top}", "예: --top 3")
+    top = args.top  # 1 이상만 들어온다(cli 의 _positive_int)
     summary = ctx.transactions.summarize_month(month, top)
     budget = ctx.budgets.get(month)
 

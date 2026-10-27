@@ -628,11 +628,17 @@ class RequirementChecklistTestCase(unittest.TestCase):
         # 데이터 폴더 안으로 내보내면 저장 파일을 CSV 로 덮어쓸 수 있으므로 거부하고, 파일은 그대로 둔다
         store = self.data_dir / "transactions.jsonl"
         before = store.read_bytes()
-        for out in (store, self.data_dir / "export.csv", self.data_dir / "backup" / "x.csv"):
+        link = export_dir / "link"  # 데이터 폴더를 가리키는 링크를 거쳐도 막는다
+        link.symlink_to(self.data_dir, target_is_directory=True)
+        outs = [store, self.data_dir / "export.csv", self.data_dir / "backup" / "x.csv", link / "transactions.jsonl"]
+        upper = self.data_dir.parent / self.data_dir.name.upper()
+        if upper.exists():  # 대소문자를 구분하지 않는 파일 시스템(macOS 기본): DATA/... 도 같은 폴더다
+            outs.append(upper / "transactions.jsonl")
+        for out in outs:
             code, _, err = self.run_cli("export", "--out", str(out), "--month", "2024-01")
             self.assertEqual(code, 1, out)
             self.assertIn("데이터 폴더 안에는 내보낼 수 없습니다", err)
-            self.assertFalse(out.exists() and out != store, out)
+            self.assertFalse(out.exists() and not out.samefile(store), out)
         self.assertEqual(store.read_bytes(), before)
         self.assertEqual(self.run_cli("list")[0], 0)
 
