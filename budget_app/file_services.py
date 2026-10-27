@@ -32,8 +32,9 @@ class ImportReport:
 class CsvService:
     """CSV 가져오기/내보내기. 스키마는 date,type,category,amount,memo,tags 고정(UTF-8, 헤더 포함)."""
 
-    def __init__(self, service: TransactionService) -> None:
+    def __init__(self, service: TransactionService, data_dir: Path) -> None:
         self.service: TransactionService = service
+        self.data_dir: Path = Path(data_dir)
 
     def import_csv(self, path: Path) -> ImportReport:
         """행 단위로 검증하며 가져온다. 실패한 행은 건너뛰고 사유를 모아 돌려준다.
@@ -117,6 +118,13 @@ class CsvService:
     def export_csv(self, path: Path, transactions: Iterable[Transaction]) -> int:
         """거래를 CSV 로 내보내고 건수를 돌려준다."""
         target = Path(path)
+        # 데이터 폴더 안으로 내보내면 transactions.jsonl 같은 저장 파일이나 백업을 CSV 로 덮어쓸 수 있다.
+        # 예전에는 그대로 덮어써서 위치 인덱스와 어긋난 저장소가 모든 명령에서 오류로 멈췄다.
+        if target.resolve().is_relative_to(self.data_dir.resolve()):
+            raise ValidationError(
+                f"데이터 폴더 안에는 내보낼 수 없습니다: {target}",
+                f"저장 파일이나 백업을 덮어쓸 수 있습니다. --out 에 데이터 폴더({self.data_dir}) 밖의 경로를 지정하세요.",
+            )
         if target.parent and not target.parent.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
         count = 0

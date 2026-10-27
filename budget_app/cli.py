@@ -35,6 +35,17 @@ DEFAULT_LIST_LIMIT = 20
 DEFAULT_TOP = 3
 
 
+def _positive_int(value: str) -> int:
+    """--limit/--top 은 1 이상만 받는다. 0·음수는 아무것도 출력하지 않거나 명령마다 다르게 동작했다."""
+    try:
+        number = int(value)
+    except ValueError:
+        number = 0
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"1 이상의 정수여야 합니다: '{value}'")
+    return number
+
+
 def _add_filter_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--from", dest="date_from", metavar="YYYY-MM-DD", help="시작일(포함)")
     parser.add_argument("--to", dest="date_to", metavar="YYYY-MM-DD", help="종료일(포함)")
@@ -48,7 +59,7 @@ def _add_filter_options(parser: argparse.ArgumentParser) -> None:
 def _add_limit_options(parser: argparse.ArgumentParser) -> None:
     """--limit 와 --all 은 서로 모순되므로 함께 쓸 수 없게 한다."""
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT,
+    group.add_argument("--limit", type=_positive_int, default=DEFAULT_LIST_LIMIT,
                        help=f"출력 건수 (기본값: {DEFAULT_LIST_LIMIT}, --all 과 함께 사용 불가)")
     group.add_argument("--all", action="store_true", help="전체 출력(--limit 과 함께 사용 불가)")
 
@@ -98,7 +109,7 @@ def _add_transaction_parsers(sub: argparse._SubParsersAction[HintArgumentParser]
 def _add_summary_parsers(sub: argparse._SubParsersAction[HintArgumentParser]) -> None:
     p_summary = sub.add_parser("summary", help="월별 요약 + 예산 사용률")
     p_summary.add_argument("--month", required=True, metavar="YYYY-MM", help="요약할 달")
-    p_summary.add_argument("--top", type=int, default=DEFAULT_TOP,
+    p_summary.add_argument("--top", type=_positive_int, default=DEFAULT_TOP,
                            help=f"카테고리 TOP N (기본값: {DEFAULT_TOP})")
     p_summary.set_defaults(func=cmd_summary)
 

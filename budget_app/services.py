@@ -86,9 +86,10 @@ class SearchCriteria:
 class CategoryService:
     """카테고리 등록·삭제·검증과 카테고리별 사용 건수 관리."""
 
-    def __init__(self, store: CategoryStore, transactions: TransactionStore) -> None:
+    def __init__(self, store: CategoryStore, transactions: TransactionStore, recurring: RecurringStore) -> None:
         self.store: CategoryStore = store
         self.transactions: TransactionStore = transactions
+        self.recurring: RecurringStore = recurring
 
     # ------------------------------------------------------------- 등록·조회·삭제
     def add(self, name: str) -> Category:
@@ -101,11 +102,18 @@ class CategoryService:
         return self.store.names()
 
     def remove(self, name: str) -> Category:
-        """카테고리를 삭제한다. 없는 이름이거나 거래에서 쓰는 중이면 거부한다."""
+        """카테고리를 삭제한다. 없는 이름이거나 거래·반복 규칙에서 쓰는 중이면 거부한다."""
         name = name.strip()
         if not self.store.exists(name):
             raise ValidationError(
                 f"카테고리 '{name}' 을(를) 찾을 수 없습니다.", "category list 로 목록을 확인하세요."
+            )
+        # 반복 규칙도 확인한다. 안 하면 지운 뒤 recurring apply 가 "등록되지 않은 카테고리" 로 멈춘다.
+        rules = [rule.display_id for rule in self.recurring.list_all() if rule.category == name]
+        if rules:
+            raise ValidationError(
+                f"카테고리 '{name}' 은(는) 반복 규칙에서 사용 중이라 삭제할 수 없습니다 ({', '.join(rules)}).",
+                "recurring list 로 확인 후, recurring remove 로 규칙을 지운 뒤 다시 시도하세요.",
             )
         in_use = self.is_in_use(name)
         if in_use is not None:
@@ -302,6 +310,8 @@ class TransactionService:
 
     def search(self, criteria: SearchCriteria, limit: int | None = None) -> Iterator[Transaction]:
         """조건에 맞는 거래를 거래일자 최신순으로 스트리밍한다(AND 결합, 기간 조건은 인덱스 범위로 제한)."""
+        if limit is not None and limit <= 0:
+            return
         found = 0
         date_from, date_to = criteria.date_bounds()
         for tx in self.store.iter_latest_transactions(date_from, date_to):

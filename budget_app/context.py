@@ -40,7 +40,7 @@ class AppContext:
         category_store.ensure_file()
         budget_store.ensure_file()
         recurring_store.ensure_file()
-        categories = CategoryService(category_store, transaction_store)
+        categories = CategoryService(category_store, transaction_store, recurring_store)
         categories.ensure_counts()
         transactions = TransactionService(transaction_store, categories)
         return cls(
@@ -50,6 +50,6 @@ class AppContext:
             categories=categories,
             budgets=BudgetService(budget_store),
             recurring=RecurringService(recurring_store, transactions, categories),
-            csv=CsvService(transactions),
+            csv=CsvService(transactions, data_dir),
             backup=BackupService(data_dir),
         )

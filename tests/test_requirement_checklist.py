@@ -5,7 +5,7 @@
     [사전]  000  데이터 초기화
     [10대 기능]
             010  add        카테고리 없으면 차단 → 카테고리 등록 → 대화형/옵션 등록, 잘못된 입력 거부, 재입력
-            020  list       거래일자 최신순, --limit, --limit/--all 동시 사용 거부
+            020  list       거래일자 최신순, --limit, --limit/--all 동시 사용 거부, --limit/--top 0·음수 거부
             030  search     기간/카테고리/타입/메모/태그, AND 결합, 조건 없음 거부
             040  summary    수입/지출/잔액, 지출 TOP N, 데이터 없는 달
             050  budget     설정 → 사용률 → 덮어쓰기 → 초과 경고
@@ -13,13 +13,13 @@
             070  update     대화형 부분 수정(엔터=유지, -=비우기), summary 반영, 없는 id
             080  delete     삭제 → list/summary 반영, 없는 id
             090  import     CSV 가져오기(잘못된 행 skip) → summary 반영
-            095  export     월/기간 내보내기, 고정 스키마, 조건 필수, 저장 파일 3종
+            095  export     월/기간 내보내기, 고정 스키마, 조건 필수, 데이터 폴더 안으로 내보내기 거부, 저장 파일 3종
     [응용 기능]
             100  로그·종료 코드 (--verbose, 0/1/130, 스택트레이스 없음)
             110  표 포맷 (구분선, 부호, 천 단위, 예산 막대)
             120  저장 원자성 (임시파일 교체 실패 시 원본 보존, 거래 데이터 append 전용 + 인덱스 제자리 갱신)
             130  백업
-            140  반복 내역
+            140  반복 내역 (규칙이 쓰는 카테고리 삭제 거부, 지운 규칙 번호 재사용 안 함)
             150  날짜 인덱스 (옛 날짜 거래여도 거래일자 최신순, 조기 종료, compact/삭제 후 복구)
 
 시나리오 데이터 (정상적인 수입/지출 조합):
@@ -49,6 +49,7 @@ import re
 import shlex
 import shutil
 import sys
+import tempfile
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -353,6 +354,16 @@ class RequirementChecklistTestCase(unittest.TestCase):
             self.run_cli("list", "--limit", "5", "--all")
         self.assertEqual(raised.exception.code, 2)
 
+        # --limit·--top 은 1 이상만: 0·음수는 아무것도 출력하지 않거나 search 만 1건을 내던 문제
+        for args in (["list", "--limit", "0"], ["search", "--type", "expense", "--limit", "-1"],
+                     ["summary", "--month", "2024-01", "--top", "0"]):
+            shown = io.StringIO()  # run_cli 가 콘솔(stdout)에 함께 보여 주는 출력. 종료되면 반환값이 없다
+            with self.assertRaises(SystemExit) as raised, redirect_stdout(shown):
+                self.run_cli(*args)
+            sys.stdout.write(shown.getvalue())
+            self.assertEqual(raised.exception.code, 2, args)
+            self.assertIn("1 이상의 정수여야 합니다", shown.getvalue())
+
     def test_030_search(self) -> None:
         cases = {
             "기간": (["--from", "2024-01-10", "--to", "2024-01-25"], {"b", "c"}),
@@ -577,7 +588,9 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(self._listed_ids(), listed_before)  # 거래는 하나도 저장되지 않음
 
     def test_095_export(self) -> None:
-        target = self.data_dir / "export_2024_02.csv"
+        export_dir = Path(tempfile.mkdtemp())  # 데이터 폴더 안으로는 내보낼 수 없어 밖에 만든다
+        self.addCleanup(shutil.rmtree, export_dir, True)
+        target = export_dir / "export_2024_02.csv"
         code, out, _ = self.run_cli("export", "--out", str(target), "--month", "2024-02")
         self.assertEqual(code, 0)
         self.assertIn("(2 records)", out)
@@ -590,7 +603,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(lunch["memo"], "점심, 회사 근처")  # 쉼표가 든 메모도 보존
         self.assertEqual(lunch["tags"], "외식,점심")
 
-        target = self.data_dir / "export_range.csv"
+        target = export_dir / "export_range.csv"
         self.assertEqual(
             self.run_cli("export", "--out", str(target), "--from", "2024-01-01", "--to", "2024-01-31")[0], 0
         )
@@ -606,11 +619,22 @@ class RequirementChecklistTestCase(unittest.TestCase):
             code, _, _ = self.run_cli("export", "--out", str(target), "--month", "2024-02")
         self.assertEqual(code, 130)
         self.assertEqual(target.read_text(encoding="utf-8"), original)
-        self.assertFalse((self.data_dir / ".export_range.csv.tmp").exists())
+        self.assertFalse((export_dir / ".export_range.csv.tmp").exists())
 
-        code, _, err = self.run_cli("export", "--out", str(self.data_dir / "none.csv"))  # 조건 필수
+        code, _, err = self.run_cli("export", "--out", str(export_dir / "none.csv"))  # 조건 필수
         self.assertEqual(code, 1)
         self.assertIn("[오류]", err)
+
+        # 데이터 폴더 안으로 내보내면 저장 파일을 CSV 로 덮어쓸 수 있으므로 거부하고, 파일은 그대로 둔다
+        store = self.data_dir / "transactions.jsonl"
+        before = store.read_bytes()
+        for out in (store, self.data_dir / "export.csv", self.data_dir / "backup" / "x.csv"):
+            code, _, err = self.run_cli("export", "--out", str(out), "--month", "2024-01")
+            self.assertEqual(code, 1, out)
+            self.assertIn("데이터 폴더 안에는 내보낼 수 없습니다", err)
+            self.assertFalse(out.exists() and out != store, out)
+        self.assertEqual(store.read_bytes(), before)
+        self.assertEqual(self.run_cli("list")[0], 0)
 
         for name in ("transactions.jsonl", "categories.jsonl", "budgets.jsonl"):  # 영구 저장 파일 3종
             path = self.data_dir / name
@@ -808,6 +832,12 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(self._listed_row(self._id("applied")),
                          [self._id("applied"), "2024-02-29", "income", "월급", "+3,000,000", "월급(반복)"])
 
+        # 반복 규칙이 쓰는 카테고리는 삭제할 수 없다(지우면 apply 가 "등록되지 않은 카테고리" 로 멈춘다)
+        code, _, err = self.run_cli("category", "remove", "--name", "월급")
+        self.assertEqual(code, 1)
+        self.assertIn(f"반복 규칙에서 사용 중이라 삭제할 수 없습니다 ({self._id('rule')})", err)
+        self.assertIn("월급", self._category_names())
+
         listed_before = self._listed_ids()
         code, out, _ = self.run_cli("recurring", "apply", "--month", "2024-02")  # 같은 달 재적용은 건너뜀
         self.assertIn("생성 0건", out)
@@ -832,6 +862,18 @@ class RequirementChecklistTestCase(unittest.TestCase):
 
         self.assertEqual(self.run_cli("recurring", "remove", "--id", self._id("rule"))[0], 0)
         self.assertNotIn(self._id("rule"), self.run_cli("recurring", "list")[1])
+
+        # 지운 규칙의 번호는 다시 쓰지 않는다. 다시 쓰면 새 규칙이 지운 규칙의 거래(RC-n/2024-02) 때문에
+        # 2024-02 에 이미 적용된 것으로 보고 건너뛰었다.
+        _, out, _ = self.run_cli("recurring", "add", "--day", "1", "--type", "income",
+                                 "--category", "월급", "--amount", "1", "--memo", "새 규칙")
+        new_rule = self._group(r"id=(RC-\d+)", out)
+        self.assertGreater(int(new_rule[3:]), int(self._id("rule")[3:]))
+        code, out, _ = self.run_cli("recurring", "apply", "--month", "2024-02")
+        self.assertIn("생성 1건", out)
+        created = self._group(r"^\s*\d+\s+(TX-\d+)\s", out, re.M)
+        self.assertEqual(self.run_cli("delete", "--id", created, "--yes")[0], 0)  # 뒤 테스트의 데이터를 그대로 둔다
+        self.assertEqual(self.run_cli("recurring", "remove", "--id", new_rule)[0], 0)
 
     def test_150_applied_date_index(self) -> None:
         # 옛 날짜 CSV 를 import + 중간 날짜를 add: id 는 가장 크지만 거래일자 순서에 맞는 위치로 들어간다

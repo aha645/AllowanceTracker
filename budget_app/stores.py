@@ -193,7 +193,12 @@ class BudgetStore(JsonlStore):
 
 
 class RecurringStore(JsonlStore):
-    """`recurring.jsonl` — 매월 반복 거래 규칙(보너스 기능)."""
+    """`recurring.jsonl` — 매월 반복 거래 규칙(보너스 기능).
+
+    삭제한 규칙은 지우지 않고 `"removed": true` 로 표시해 남긴다. 규칙이 만든 거래에는 `RC-1/2024-03`
+    같은 표시가 남는데, 지운 RC-1 의 번호를 새 규칙이 다시 받으면 그 달에 이미 적용된 것으로 보고
+    건너뛰었다. 그래서 거래 id 처럼 규칙 id 도 다시 쓰지 않는다.
+    """
 
     FILE_NAME = "recurring.jsonl"
 
@@ -201,8 +206,17 @@ class RecurringStore(JsonlStore):
         super().__init__(Path(data_dir) / self.FILE_NAME)
 
     def list_all(self) -> list[RecurringRule]:
-        rules = [RecurringRule.from_dict(row) for row in self._iter_raw()]
+        rules = [RecurringRule.from_dict(row) for row in self._iter_raw() if not row.get("removed")]
         return sorted(rules, key=lambda r: r.id)
+
+    def _live_row(self, rows: list[dict[str, Any]], rule_id: int) -> dict[str, Any]:
+        row = next((r for r in rows if int(r["id"]) == rule_id and not r.get("removed")), None)
+        if row is None:
+            raise NotFoundError(
+                f"RC-{rule_id} 반복 규칙을 찾을 수 없습니다.",
+                "recurring list 로 등록된 규칙을 확인하세요.",
+            )
+        return row
 
     def get(self, rule_id: int) -> RecurringRule:
         rule = next((r for r in self.list_all() if r.id == rule_id), None)
@@ -214,8 +228,8 @@ class RecurringStore(JsonlStore):
         return rule
 
     def add(self, rule: RecurringRule) -> RecurringRule:
-        rules = self.list_all()
-        new_id = max((r.id for r in rules), default=0) + 1
+        rows = list(self._iter_raw())
+        new_id = max((int(r["id"]) for r in rows), default=0) + 1  # 삭제 표시한 규칙의 번호도 피한다
         stored = RecurringRule(
             id=new_id,
             day=rule.day,
@@ -226,29 +240,22 @@ class RecurringStore(JsonlStore):
             tags=list(rule.tags),
             applied_months=[],
         )
-        rules.append(stored)
-        self._rewrite([r.to_dict() for r in rules])
+        rows.append(stored.to_dict())
+        self._rewrite(rows)
         return stored
 
     def save(self, rule: RecurringRule) -> RecurringRule:
         """기존 규칙을 통째로 교체 저장한다."""
-        rules = self.list_all()
-        if not any(r.id == rule.id for r in rules):
-            raise NotFoundError(
-                f"RC-{rule.id} 반복 규칙을 찾을 수 없습니다.",
-                "recurring list 로 등록된 규칙을 확인하세요.",
-            )
-        rows = [rule.to_dict() if r.id == rule.id else r.to_dict() for r in rules]
+        rows = list(self._iter_raw())
+        target = self._live_row(rows, rule.id)
+        target.clear()
+        target.update(rule.to_dict())
         self._rewrite(rows)
         return rule
 
     def remove(self, rule_id: int) -> RecurringRule:
-        rules = self.list_all()
-        target = next((r for r in rules if r.id == rule_id), None)
-        if target is None:
-            raise NotFoundError(
-                f"RC-{rule_id} 반복 규칙을 찾을 수 없습니다.",
-                "recurring list 로 등록된 규칙을 확인하세요.",
-            )
-        self._rewrite([r.to_dict() for r in rules if r.id != rule_id])
-        return target
+        rows = list(self._iter_raw())
+        target = self._live_row(rows, rule_id)
+        target["removed"] = True  # 번호를 다시 쓰지 않도록 줄은 남긴다(클래스 설명)
+        self._rewrite(rows)
+        return RecurringRule.from_dict(target)

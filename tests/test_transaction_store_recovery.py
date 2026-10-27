@@ -354,7 +354,9 @@ repo.update_transaction(repo.get_transaction(1).replace_fields(date="1990-01-01"
             writer.writerow(["invalid", "expense", "식비", 1, "", ""])
         report = ctx.csv.import_csv(source)
         self.assertEqual((report.imported, report.skipped), (1200, 1))
-        out = self.folder / "export.csv"
+        export_dir = tempfile.TemporaryDirectory()  # 데이터 폴더 안으로는 내보낼 수 없다
+        self.addCleanup(export_dir.cleanup)
+        out = Path(export_dir.name) / "export.csv"
         criteria = SearchCriteria(month="2024-02")
         self.assertEqual(ctx.csv.export_csv(out, ctx.transactions.search(criteria)), 1200)
         ctx.recurring.add(31, "expense", "식비", 123)
