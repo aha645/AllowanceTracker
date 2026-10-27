@@ -21,7 +21,7 @@ from .models import (
     StorageError,
     ValidationError,
 )
-from .repository import _fsync_dir
+from .transaction_store import _fsync_dir
 
 
 class JsonlStore:

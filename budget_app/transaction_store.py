@@ -371,7 +371,7 @@ class StorageStats:
         return self.orphan_size / self.log_size
 
 
-class TransactionRepository:
+class TransactionStore:
     """거래 저장소. 로그 append 와 인덱스 슬롯 갱신을 함께 책임진다."""
 
     LOG_NAME = "transactions.jsonl"

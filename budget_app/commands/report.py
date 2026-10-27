@@ -21,7 +21,7 @@ def cmd_summary(ctx: AppContext, args: argparse.Namespace) -> int:
     if top < 1:
         raise ValidationError(f"--top 은 1 이상이어야 합니다: {top}", "예: --top 3")
     summary = ctx.transactions.summarize_month(month, top)
-    budget = ctx.budget_service.get(month)
+    budget = ctx.budgets.get(month)
 
     print(f"[{month} 요약]")
     if summary.is_empty:
@@ -59,7 +59,7 @@ def cmd_summary(ctx: AppContext, args: argparse.Namespace) -> int:
 @command
 def cmd_budget_set(ctx: AppContext, args: argparse.Namespace) -> int:
     """월 예산 설정(같은 달은 덮어쓰기)."""
-    budget, previous = ctx.budget_service.set_budget(args.month, args.amount)
+    budget, previous = ctx.budgets.set_budget(args.month, args.amount)
     print(f"[저장 완료] {budget.month} 예산 {format_amount(budget.amount)}원")
     if previous is not None:
         print(f"[안내] 기존 예산 {format_amount(previous.amount)}원을 덮어썼습니다.")
@@ -70,7 +70,7 @@ def cmd_budget_set(ctx: AppContext, args: argparse.Namespace) -> int:
 def cmd_budget_show(ctx: AppContext, args: argparse.Namespace) -> int:
     """특정 달 예산과 사용률 조회."""
     month = validate_month(args.month)
-    budget = ctx.budget_service.get(month)
+    budget = ctx.budgets.get(month)
     if budget is None:
         print(f"[안내] {month} 예산이 설정되지 않았습니다.")
         print(f"[힌트] budget set --month {month} --amount <금액>")
@@ -84,7 +84,7 @@ def cmd_budget_show(ctx: AppContext, args: argparse.Namespace) -> int:
 @command
 def cmd_budget_list(ctx: AppContext, args: argparse.Namespace) -> int:
     """설정된 예산 전체 조회."""
-    budgets = ctx.budget_service.list_all()
+    budgets = ctx.budgets.list_all()
     if not budgets:
         print("[안내] 설정된 예산이 없습니다.")
         print("[힌트] budget set --month 2024-01 --amount 500000")
@@ -114,6 +114,6 @@ def cmd_budget_list(ctx: AppContext, args: argparse.Namespace) -> int:
 @command
 def cmd_budget_remove(ctx: AppContext, args: argparse.Namespace) -> int:
     """월 예산 삭제."""
-    budget = ctx.budget_service.remove(args.month)
+    budget = ctx.budgets.remove(args.month)
     print(f"[삭제 완료] {budget.month} 예산")
     return EXIT_OK

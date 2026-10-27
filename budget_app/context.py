@@ -1,4 +1,4 @@
-"""커맨드 실행에 필요한 저장소/서비스를 한 번에 조립하는 컨텍스트."""
+"""커맨드 실행에 필요한 서비스를 한 번에 조립하는 컨텍스트."""
 
 from __future__ import annotations
 
@@ -6,49 +6,50 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .file_services import BackupService, CsvService
-from .repository import TransactionRepository
-from .services import BudgetService, RecurringService, TransactionService
+from .services import BudgetService, CategoryService, RecurringService, TransactionService
 from .stores import BudgetStore, CategoryStore, RecurringStore
+from .transaction_store import TransactionStore
 
 
 @dataclass(slots=True)
 class AppContext:
-    """커맨드 실행에 필요한 저장소/서비스 묶음."""
+    """커맨드가 쓰는 서비스 묶음.
+
+    저장소(store)는 여기서 한 번만 만들어 서비스들이 나눠 쓰고, 커맨드에는 노출하지 않는다.
+    커맨드는 서비스만 거쳐 데이터를 다룬다.
+    """
 
     data_dir: Path
-    repo: TransactionRepository
-    categories: CategoryStore
-    budgets: BudgetStore
-    recurring_store: RecurringStore
+    recovered: list[str]  # 시작할 때 지난 실행의 중단을 자동으로 바로잡은 내용(커맨드 실행 전에 안내)
     transactions: TransactionService
-    budget_service: BudgetService
-    csv_service: CsvService
-    backup_service: BackupService
-    recurring_service: RecurringService
+    categories: CategoryService
+    budgets: BudgetService
+    recurring: RecurringService
+    csv: CsvService
+    backup: BackupService
 
     @classmethod
     def create(cls, data_dir: Path) -> "AppContext":
-        """저장 폴더를 준비하고(없으면 생성) 서비스 객체들을 조립한다."""
+        """저장 폴더를 준비하고(없으면 생성) 저장소와 서비스를 조립한다."""
         data_dir = Path(data_dir).expanduser()
-        repo = TransactionRepository(data_dir)
-        categories = CategoryStore(data_dir)
-        budgets = BudgetStore(data_dir)
+        transaction_store = TransactionStore(data_dir)
+        category_store = CategoryStore(data_dir)
+        budget_store = BudgetStore(data_dir)
         recurring_store = RecurringStore(data_dir)
-        repo.ensure_files()
-        categories.ensure_file()
-        budgets.ensure_file()
+        transaction_store.ensure_files()  # 지난 실행이 중간에 꺼졌으면 여기서 복구한다
+        category_store.ensure_file()
+        budget_store.ensure_file()
         recurring_store.ensure_file()
-        tx_service = TransactionService(repo, categories)
-        tx_service.ensure_category_counts()
+        categories = CategoryService(category_store, transaction_store)
+        categories.ensure_counts()
+        transactions = TransactionService(transaction_store, categories)
         return cls(
             data_dir=data_dir,
-            repo=repo,
+            recovered=list(transaction_store.recovered),
+            transactions=transactions,
             categories=categories,
-            budgets=budgets,
-            recurring_store=recurring_store,
-            transactions=tx_service,
-            budget_service=BudgetService(budgets),
-            csv_service=CsvService(tx_service),
-            backup_service=BackupService(data_dir),
-            recurring_service=RecurringService(recurring_store, tx_service),
+            budgets=BudgetService(budget_store),
+            recurring=RecurringService(recurring_store, transactions, categories),
+            csv=CsvService(transactions),
+            backup=BackupService(data_dir),
         )

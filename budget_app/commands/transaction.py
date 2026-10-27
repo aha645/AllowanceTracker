@@ -46,7 +46,7 @@ def build_criteria(ctx: AppContext, args: argparse.Namespace) -> SearchCriteria:
             f"기간이 뒤집혔습니다: --from {date_from} > --to {date_to}",
             "--from 에는 더 이른 날짜를 지정하세요.",
         )
-    category = ctx.transactions.validate_category(args.category) if args.category else None
+    category = ctx.categories.validate(args.category) if args.category else None
     type_ = validate_type(args.type) if args.type else None
     return SearchCriteria(
         date_from=date_from,
@@ -67,7 +67,7 @@ def _category_validator(ctx: AppContext) -> Callable[[str], str]:
         text = raw.strip()
         if text.isdigit() and 1 <= int(text) <= len(names):
             return names[int(text) - 1]
-        return ctx.transactions.validate_category(text)
+        return ctx.categories.validate(text)
 
     return validator
 
@@ -106,7 +106,7 @@ def _prompt_transaction(ctx: AppContext) -> Transaction:
 @command
 def cmd_add(ctx: AppContext, args: argparse.Namespace) -> int:
     """거래 추가. 옵션이 하나도 없으면 대화형으로 입력받는다."""
-    ctx.transactions.ensure_categories_exist()
+    ctx.categories.ensure_registered()
     option_values = (args.date, args.type, args.category, args.amount, args.memo, args.tags)
     if any(v is not None for v in option_values):
         missing = [
@@ -144,7 +144,7 @@ def cmd_list(ctx: AppContext, args: argparse.Namespace) -> int:
     """거래 목록(최신순)."""
     limit = None if args.all else args.limit
     count = render_transactions(ctx.transactions.iter_latest(limit))
-    total_live = ctx.repo.stats().live_count
+    total_live = ctx.transactions.stats().live_count
     if count == 0 and total_live == 0:
         print("[안내] 등록된 거래가 없습니다.")
         print("[힌트] `add` 명령으로 거래를 추가하세요.")
@@ -202,7 +202,7 @@ def _if_changed(new: T, old: T) -> T | None:
 def cmd_update(ctx: AppContext, args: argparse.Namespace) -> int:
     """거래 수정(대화형). 현재 값을 보여주고 바꿀 항목만 입력받는다(엔터=유지, -=비우기)."""
     tx_id = parse_tx_id(args.id)
-    current = ctx.repo.get_transaction(tx_id)  # 없는 id 는 입력 전에 바로 오류 처리
+    current = ctx.transactions.get(tx_id)  # 없는 id 는 입력 전에 바로 오류 처리
     print("[현재 값]")
     render_transactions([current])
     print(f"[안내] 바꿀 항목만 입력하세요. 엔터=기존 값 유지, 메모/태그는 '{CLEAR_TOKEN}' 입력 시 비움 (Ctrl+C 로 취소)")
@@ -265,7 +265,7 @@ def cmd_update(ctx: AppContext, args: argparse.Namespace) -> int:
 def cmd_delete(ctx: AppContext, args: argparse.Namespace) -> int:
     """거래 삭제(인덱스 슬롯만 0으로 초기화)."""
     tx_id = parse_tx_id(args.id)
-    tx = ctx.repo.get_transaction(tx_id)
+    tx = ctx.transactions.get(tx_id)
     if not args.yes and sys.stdin.isatty():
         render_transactions([tx])
         answer = input("위 거래를 삭제할까요? (y/N): ").strip().lower()

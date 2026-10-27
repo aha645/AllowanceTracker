@@ -16,8 +16,8 @@ from unittest import mock
 from budget_app.context import AppContext
 from budget_app.durability import SlotUndo
 from budget_app.models import StorageError, Transaction
-from budget_app.repository import SLOT_STRUCT, DateIndex, TransactionRepository, date_ordinal
 from budget_app.services import SearchCriteria
+from budget_app.transaction_store import SLOT_STRUCT, DateIndex, TransactionStore, date_ordinal
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -29,19 +29,19 @@ def tx(day: str = "2024-01-15", amount: int = 100) -> Transaction:
 REBUILT = "날짜 인덱스가 손상되어 거래 파일에서 다시 만들었습니다."
 
 
-class RepositoryRecoveryTests(unittest.TestCase):
+class TransactionStoreRecoveryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.folder = Path(self.tmp.name)
         self.repo = self.open_repo()
 
-    def open_repo(self) -> TransactionRepository:
-        repo = TransactionRepository(self.folder)
+    def open_repo(self) -> TransactionStore:
+        repo = TransactionStore(self.folder)
         repo.ensure_files()
         return repo
 
-    def listing(self, repo: TransactionRepository | None = None) -> list[tuple[str, int, int]]:
+    def listing(self, repo: TransactionStore | None = None) -> list[tuple[str, int, int]]:
         return [(item.date, item.id, item.amount) for item in (repo or self.open_repo()).iter_latest_transactions()]
 
     def test_100000_transactions_ranges_updates_deletes_and_compact(self) -> None:
@@ -127,7 +127,7 @@ class RepositoryRecoveryTests(unittest.TestCase):
                             real_replace(src, dst)
                         raise KeyboardInterrupt
                     return real_replace(src, dst)
-                with mock.patch("budget_app.repository.os.replace", side_effect=stop), \
+                with mock.patch("budget_app.transaction_store.os.replace", side_effect=stop), \
                      self.assertRaises(KeyboardInterrupt):
                     self.open_repo()
                 self.assertEqual(self.listing(), expected)
@@ -148,7 +148,7 @@ class RepositoryRecoveryTests(unittest.TestCase):
                         raise KeyboardInterrupt
                     return real_replace(src, dst)
                 repo = self.open_repo()
-                with mock.patch("budget_app.repository.os.replace", side_effect=stop), \
+                with mock.patch("budget_app.transaction_store.os.replace", side_effect=stop), \
                      self.assertRaises(KeyboardInterrupt):
                     repo.append_transactions(rows)
                 self.assertEqual(self.listing(), expected)
@@ -159,7 +159,7 @@ class RepositoryRecoveryTests(unittest.TestCase):
         # 살아있는 2개 + 새 400개(예전 날짜 update 가 옛 항목을 지웠다). 중단된 import 가 남긴 항목은 같은 id 로 다시 들어와 겹친다.
         self.assertEqual(repo.date_index.count(), 402)
 
-    def date_entries(self, repo: TransactionRepository) -> list[tuple[int, int]]:
+    def date_entries(self, repo: TransactionStore) -> list[tuple[int, int]]:
         index = repo.date_index
         return sorted(index.iter_desc(0, index.count()))
 
@@ -189,8 +189,8 @@ class RepositoryRecoveryTests(unittest.TestCase):
         script = '''
 import os, sys
 from pathlib import Path
-from budget_app.repository import TransactionIndex, TransactionRepository
-repo = TransactionRepository(Path(sys.argv[1]))
+from budget_app.transaction_store import TransactionIndex, TransactionStore
+repo = TransactionStore(Path(sys.argv[1]))
 repo.ensure_files()
 TransactionIndex.write_slot = lambda self, *args: os._exit(76)
 repo.update_transaction(repo.get_transaction(2).replace_fields(date="2023-01-01"))
@@ -302,9 +302,9 @@ repo.update_transaction(repo.get_transaction(2).replace_fields(date="2023-01-01"
         script = '''
 import os, sys
 from pathlib import Path
-from budget_app.repository import TransactionRepository
+from budget_app.transaction_store import TransactionStore
 from budget_app.durability import SlotUndo
-repo = TransactionRepository(Path(sys.argv[1]))
+repo = TransactionStore(Path(sys.argv[1]))
 repo.ensure_files()
 SlotUndo.commit = lambda self: os._exit(74)
 repo.update_transaction(repo.get_transaction(1).replace_fields(date="1990-01-01", amount=999))
@@ -326,27 +326,27 @@ repo.update_transaction(repo.get_transaction(1).replace_fields(date="1990-01-01"
             for i in range(1200):
                 writer.writerow([f"2024-02-{i % 29 + 1:02}", "expense", "식비", i + 1, "한글,CSV", "a,b"])
             writer.writerow(["invalid", "expense", "식비", 1, "", ""])
-        report = ctx.csv_service.import_csv(source)
+        report = ctx.csv.import_csv(source)
         self.assertEqual((report.imported, report.skipped), (1200, 1))
         out = self.folder / "export.csv"
         criteria = SearchCriteria(month="2024-02")
-        self.assertEqual(ctx.csv_service.export_csv(out, ctx.transactions.search(criteria)), 1200)
-        ctx.recurring_service.add(31, "expense", "식비", 123)
-        self.assertEqual(len(ctx.recurring_service.apply_month("2024-02")[0]), 1)
-        self.assertEqual(len(ctx.recurring_service.apply_month("2024-02")[0]), 0)
-        expected = self.listing(ctx.repo)
-        ctx.repo.compact()
+        self.assertEqual(ctx.csv.export_csv(out, ctx.transactions.search(criteria)), 1200)
+        ctx.recurring.add(31, "expense", "식비", 123)
+        self.assertEqual(len(ctx.recurring.apply_month("2024-02")[0]), 1)
+        self.assertEqual(len(ctx.recurring.apply_month("2024-02")[0]), 0)
+        expected = self.listing()
+        ctx.transactions.compact()
         self.assertEqual(self.listing(), expected)
-        backup, names = ctx.backup_service.create()
+        backup, names = ctx.backup.create()
         self.assertIn("transactions.date.idx", names)
-        self.assertEqual((backup / "transactions.date.idx").read_bytes(), ctx.repo.date_idx_path.read_bytes())
+        self.assertEqual((backup / "transactions.date.idx").read_bytes(), self.repo.date_idx_path.read_bytes())
         roundtrip = AppContext.create(self.folder / "roundtrip")
         roundtrip.categories.add("식비")
-        self.assertEqual(roundtrip.csv_service.import_csv(out).imported, 1200)
+        self.assertEqual(roundtrip.csv.import_csv(out).imported, 1200)
         self.assertEqual(sorted((item.date, item.amount, item.memo, item.tags)
-                                for item in roundtrip.repo.iter_latest_transactions()),
+                                for item in roundtrip.transactions.iter_latest()),
                          sorted((item.date, item.amount, item.memo, item.tags)
-                                for item in ctx.repo.iter_latest_transactions() if not item.source))
+                                for item in ctx.transactions.iter_latest() if not item.source))
 
 
 if __name__ == "__main__":

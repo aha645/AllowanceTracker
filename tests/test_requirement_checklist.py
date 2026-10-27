@@ -61,12 +61,12 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from budget_app import repository
+from budget_app import transaction_store
 from budget_app.cli import main
 from budget_app.commands.transaction import cmd_add
 from budget_app.console import prompt_until_valid
-from budget_app.repository import DATE_ENTRY_STRUCT, DateIndex, TransactionRepository
 from budget_app.stores import CategoryStore, RecurringStore
+from budget_app.transaction_store import DATE_ENTRY_STRUCT, DateIndex, TransactionStore
 from budget_app.validators import validate_type
 
 
@@ -146,7 +146,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
     def _category_counts(self) -> tuple[dict[str, int], dict[str, int]]:
         """(categories.jsonl 에 기록된 사용 건수, 거래를 실제로 센 건수)."""
         saved = {c.name: c.count for c in CategoryStore(self.data_dir).list_all()}
-        actual = TransactionRepository(self.data_dir).category_counts()
+        actual = TransactionStore(self.data_dir).category_counts()
         return saved, {name: actual.get(name, 0) for name in saved}
 
     def run_cli(self, *argv: str) -> tuple[int, str, str]:
@@ -448,7 +448,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
 
         # 건수가 0 이면 거래를 훑지 않고 바로 삭제한다(10만 건이어도 즉시)
         self.assertEqual(self.run_cli("category", "add", "--name", "미사용")[0], 0)
-        with mock.patch.object(TransactionRepository, "iter_latest_transactions",
+        with mock.patch.object(TransactionStore, "iter_latest_transactions",
                                side_effect=AssertionError("훑으면 안 됨")):
             self.assertEqual(self.run_cli("category", "remove", "--name", "미사용")[0], 0)
         self.assertNotIn("미사용", self._category_names())
@@ -567,7 +567,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(self._listed_ids(), listed_before)  # 읽지 못한 파일·잘못된 행만 있는 파일은 아무것도 추가하지 않음
 
         # 메모리 부족도 스택트레이스 없이 [오류]/[힌트] 로 알린다
-        with mock.patch.object(TransactionRepository, "append_transactions", side_effect=MemoryError):
+        with mock.patch.object(TransactionStore, "append_transactions", side_effect=MemoryError):
             code, _, err = self.run_cli("import", "--from", str(source))
         self.assertEqual(code, 1)
         self.assertIn("[오류] 메모리가 부족", err)
@@ -694,7 +694,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
 
         # 건수를 저장한 뒤 거래를 쓰기 전에 꺼지면 건수만 많아진다 → 삭제 때 확인해 보고 허용
         self.assertEqual(self.run_cli("category", "add", "--name", "중단_카테고리")[0], 0)
-        with mock.patch.object(TransactionRepository, "append_transaction", side_effect=KeyboardInterrupt):
+        with mock.patch.object(TransactionStore, "append_transaction", side_effect=KeyboardInterrupt):
             code, _, _ = self.run_cli("add", "--date", "2024-04-02", "--type", "expense",
                                       "--category", "중단_카테고리", "--amount", "1000")
         self.assertEqual(code, 130)
@@ -749,7 +749,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
                 raise KeyboardInterrupt  # 강제 종료 흉내
             return real_replace(src, dst)
 
-        with mock.patch("budget_app.repository.os.replace", side_effect=stop_at_log_replace):
+        with mock.patch("budget_app.transaction_store.os.replace", side_effect=stop_at_log_replace):
             self.assertEqual(self.run_cli("compact")[0], 130)
         self.assertNotEqual(idx.read_bytes(), before_idx)  # 슬롯은 새 로그 위치로 바뀌었는데 로그는 옛것
         code, out, _ = self.run_cli("list", "--all")
@@ -762,7 +762,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
 
         # 로그 교체는 끝나고 복사본을 지우기 전에 꺼지면, 이미 짝이 맞으므로 복사본만 지운다
         calls: list[int] = []
-        real_fsync_dir = repository._fsync_dir
+        real_fsync_dir = transaction_store._fsync_dir
 
         def stop_after_log_replace(path):  # type: ignore[no-untyped-def]
             calls.append(1)
@@ -770,7 +770,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
                 raise KeyboardInterrupt
             return real_fsync_dir(path)
 
-        with mock.patch("budget_app.repository._fsync_dir", side_effect=stop_after_log_replace):
+        with mock.patch("budget_app.transaction_store._fsync_dir", side_effect=stop_after_log_replace):
             self.assertEqual(self.run_cli("compact")[0], 130)
         self.assertTrue((self.data_dir / "transactions.idx.compact-backup").exists())
         code, out, _ = self.run_cli("list", "--all")
@@ -866,13 +866,13 @@ class RequirementChecklistTestCase(unittest.TestCase):
 
         # --limit 만큼만 읽고 멈춘다(전체를 읽지 않는다)
         reads: list[int] = []
-        original = TransactionRepository._read_at
+        original = TransactionStore._read_at
 
         def counting(repo, fp, start, end):  # type: ignore[no-untyped-def]
             reads.append(start)
             return original(repo, fp, start, end)
 
-        with mock.patch.object(TransactionRepository, "_read_at", counting):
+        with mock.patch.object(TransactionStore, "_read_at", counting):
             self.assertEqual(self.run_cli("list", "--limit", "2")[0], 0)
         self.assertEqual(len(reads), 2)
 
@@ -913,7 +913,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
         two_rows = self.data_dir / "two_rows.csv"
         two_rows.write_text("date,type,category,amount,memo,tags\n2024-01-11,expense,식비,100,,\n"
                             "2024-01-12,expense,식비,200,,\n", encoding="utf-8")
-        with mock.patch.object(TransactionRepository, "_commit_import", side_effect=KeyboardInterrupt):
+        with mock.patch.object(TransactionStore, "_commit_import", side_effect=KeyboardInterrupt):
             self.assertEqual(self.run_cli("import", "--from", str(two_rows))[0], 130)
         code, out, _ = self.run_cli("list", "--all")
         self.assertIn("[안내] 지난 import 가 끝나지 않아 그 import 전체를 취소했습니다", out)

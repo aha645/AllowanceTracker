@@ -14,7 +14,7 @@ from ..validators import format_tags, validate_month
 @command
 def cmd_recurring_add(ctx: AppContext, args: argparse.Namespace) -> int:
     """반복 규칙 등록."""
-    rule = ctx.recurring_service.add(
+    rule = ctx.recurring.add(
         day=args.day,
         type_=args.type,
         category=args.category,
@@ -29,7 +29,7 @@ def cmd_recurring_add(ctx: AppContext, args: argparse.Namespace) -> int:
 @command
 def cmd_recurring_list(ctx: AppContext, args: argparse.Namespace) -> int:
     """반복 규칙 목록."""
-    rules = ctx.recurring_service.list_all()
+    rules = ctx.recurring.list_all()
     if not rules:
         print("[안내] 등록된 반복 규칙이 없습니다.")
         print("[힌트] recurring add --day 25 --type income --category 용돈 --amount 300000")
@@ -59,7 +59,7 @@ def cmd_recurring_list(ctx: AppContext, args: argparse.Namespace) -> int:
 @command
 def cmd_recurring_remove(ctx: AppContext, args: argparse.Namespace) -> int:
     """반복 규칙 삭제."""
-    rule = ctx.recurring_service.remove(parse_rule_id(args.id))
+    rule = ctx.recurring.remove(parse_rule_id(args.id))
     print(f"[삭제 완료] id={rule.display_id}")
     return EXIT_OK
 
@@ -68,7 +68,7 @@ def cmd_recurring_remove(ctx: AppContext, args: argparse.Namespace) -> int:
 def cmd_recurring_apply(ctx: AppContext, args: argparse.Namespace) -> int:
     """특정 월에 반복 거래를 생성한다(이미 적용된 규칙은 건너뜀)."""
     month = validate_month(args.month)
-    created, skipped = ctx.recurring_service.apply_month(month)
+    created, skipped = ctx.recurring.apply_month(month)
     if not created and not skipped:
         print("[안내] 등록된 반복 규칙이 없습니다.")
         return EXIT_OK

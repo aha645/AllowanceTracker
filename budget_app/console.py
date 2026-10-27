@@ -116,8 +116,8 @@ def print_budget_usage(usage: BudgetUsage) -> None:
 
 def maybe_hint_compact(ctx: AppContext) -> None:
     """고아 데이터가 많이 쌓였으면 compact 를 안내한다."""
-    if ctx.repo.needs_compact():
-        stats = ctx.repo.stats()
+    if ctx.transactions.needs_compact():
+        stats = ctx.transactions.stats()
         print(
             f"[안내] 로그의 {stats.orphan_ratio * 100:.0f}% 가 오래된 버전입니다. "
             "`compact` 명령으로 정리할 수 있습니다."

@@ -15,7 +15,7 @@ from .transaction import build_criteria
 @command
 def cmd_import(ctx: AppContext, args: argparse.Namespace) -> int:
     """CSV 파일에서 거래를 일괄 등록한다(실패 행은 건너뜀)."""
-    report = ctx.csv_service.import_csv(Path(args.source))
+    report = ctx.csv.import_csv(Path(args.source))
     print(f"[완료] {args.source} → imported={report.imported}, skipped={report.skipped}")
     if report.errors:
         print("\n[건너뛴 행]")
@@ -41,7 +41,7 @@ def cmd_export(ctx: AppContext, args: argparse.Namespace) -> int:
             "둘 중 한 가지 방식만 사용하세요.",
         )
     criteria = build_criteria(ctx, args)
-    count = ctx.csv_service.export_csv(Path(args.out), ctx.transactions.search(criteria))
+    count = ctx.csv.export_csv(Path(args.out), ctx.transactions.search(criteria))
     print(f"[완료] {args.out} ({count} records)")
     if count == 0:
         print("[안내] 조건에 맞는 거래가 없어 헤더만 기록했습니다.")
@@ -51,9 +51,8 @@ def cmd_export(ctx: AppContext, args: argparse.Namespace) -> int:
 @command
 def cmd_compact(ctx: AppContext, args: argparse.Namespace) -> int:
     """오래된(고아) 레코드를 정리해 로그 파일을 다시 쓴다."""
-    before = ctx.repo.compact()
-    ctx.transactions.recount_categories()  # 어긋났을 수 있는 카테고리 사용 건수도 이때 다시 센다
-    after = ctx.repo.stats()
+    before = ctx.transactions.compact()  # 어긋났을 수 있는 카테고리 사용 건수도 이때 다시 센다
+    after = ctx.transactions.stats()
     saved = before.log_size - after.log_size
     print("[완료] compact")
     print(
@@ -74,7 +73,7 @@ def cmd_compact(ctx: AppContext, args: argparse.Namespace) -> int:
 @command
 def cmd_backup(ctx: AppContext, args: argparse.Namespace) -> int:
     """데이터 파일을 타임스탬프 폴더로 백업한다."""
-    target, copied = ctx.backup_service.create()
+    target, copied = ctx.backup.create()
     print(f"[완료] 백업 생성: {target}")
     for name in copied:
         print(f"  - {name}")
