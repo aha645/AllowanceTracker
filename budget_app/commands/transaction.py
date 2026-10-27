@@ -48,6 +48,11 @@ def _category_validator(ctx: AppContext) -> Callable[[str], str]:
     return validator
 
 
+def _print_categories(names: list[str]) -> None:
+    """카테고리 입력 전에 번호로 고를 수 있도록 등록된 카테고리를 보여준다."""
+    print("등록된 카테고리: " + ", ".join(f"{i}) {n}" for i, n in enumerate(names, start=1)))
+
+
 def _prompt_transaction(ctx: AppContext) -> Transaction:
     """대화형 입력으로 거래 1건을 구성한다(검증 실패 시 재입력)."""
     names = ctx.categories.names()
@@ -63,7 +68,7 @@ def _prompt_transaction(ctx: AppContext) -> Transaction:
         default=TYPE_EXPENSE,
         allow_blank=True,
     )
-    print("등록된 카테고리: " + ", ".join(f"{i}) {n}" for i, n in enumerate(names, start=1)))
+    _print_categories(names)
     category = prompt_until_valid("카테고리 (번호 또는 이름): ", _category_validator(ctx))
     amount = prompt_until_valid("금액 (양의 정수): ", validate_amount)
     memo = input("메모 (선택, 엔터=건너뛰기, 따옴표 없이 입력): ").strip()
@@ -189,6 +194,7 @@ def cmd_update(ctx: AppContext, args: argparse.Namespace) -> int:
     type_ = prompt_until_valid(
         f"타입 [{current.type}]: ", validate_type, default=current.type, allow_blank=True
     )
+    _print_categories(ctx.categories.names())
     category = prompt_until_valid(
         f"카테고리 [{current.category}] (번호 또는 이름): ",
         _category_validator(ctx),

@@ -465,6 +465,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
             code, out, _ = self.run_cli("update", "--id", self._id("a"))
         self.assertEqual(code, 0)
         self.assertIn(f"[수정 완료] id={self._id('a')}", out)
+        self.assertIn("등록된 카테고리: 1) 식비, 2) 교통, 3) 월급, 4) 월세", out)  # 번호로 바꿀 수 있게 목록을 보여준다
 
         _, out, _ = self.run_cli("search", "--category", "식비")
         self.assertIn("15,000", out)
