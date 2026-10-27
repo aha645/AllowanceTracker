@@ -1245,4 +1245,5 @@ transactions.date.idx 내용
 hexdump -v -e '1/4 "%u," 1/8 "%u\n"' data/transactions.date.idx | while IFS=, read -r val1 val2; do
     [ -z "$val1" ] && continue
     echo "$(date -r $(( (val1 - 719163) * 86400 )) "+%Y-%m-%d"),$val2"
+done
 ```
