@@ -100,13 +100,13 @@ class TransactionStoreRecoveryTests(unittest.TestCase):
         self.repo.update_transaction(self.repo.get_transaction(2).replace_fields(date="2025-01-01"))
         self.repo.delete_transaction(3)
         before = self.listing(self.repo)
-        log_before, idx_before = self.repo.log_path.read_bytes(), self.repo.idx_path.read_bytes()
+        tr_before, idx_before = self.repo.tr_path.read_bytes(), self.repo.idx_path.read_bytes()
         self.assertEqual(self.repo.date_index.count(), 4)  # update 로 남은 옛 날짜 항목 포함
         self.damage_date_index()
         reopened = self.open_repo()
         self.assertEqual(reopened.recovered, [REBUILT])
         self.assertEqual(self.listing(reopened), before)
-        self.assertEqual(reopened.log_path.read_bytes(), log_before)
+        self.assertEqual(reopened.tr_path.read_bytes(), tr_before)
         self.assertEqual(reopened.idx_path.read_bytes(), idx_before)
         self.assertEqual(sorted(path.name for path in self.folder.glob("transactions.date.idx*")),
                          ["transactions.date.idx"])  # 백업하지 않는다
@@ -223,10 +223,10 @@ repo.update_transaction(repo.get_transaction(2).replace_fields(date="2023-01-01"
     def test_jsonl_then_date_failure_leaves_uncommitted_orphan(self) -> None:
         old = self.repo.append_transaction(tx())
         expected = self.listing(self.repo)
-        size = self.repo.log_path.stat().st_size
+        size = self.repo.tr_path.stat().st_size
         with mock.patch.object(DateIndex, "merge", side_effect=OSError("disk full")), self.assertRaises(OSError):
             self.repo.append_transaction(tx("2020-01-01"))
-        self.assertGreater(self.repo.log_path.stat().st_size, size)
+        self.assertGreater(self.repo.tr_path.stat().st_size, size)
         self.assertEqual(self.listing(), expected)
         with mock.patch.object(DateIndex, "merge", side_effect=OSError("disk full")), self.assertRaises(OSError):
             self.repo.update_transaction(old.replace_fields(date="2020-01-01"))

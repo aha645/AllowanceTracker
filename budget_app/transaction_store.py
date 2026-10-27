@@ -1,4 +1,4 @@
-"""거래 저장 엔진: append-only 로그(JSONL) + 위치 기반 고정폭 이진 인덱스 + 날짜 정렬 인덱스.
+"""거래 저장 엔진: append-only 거래 데이터 파일(JSONL) + 위치 기반 고정폭 이진 인덱스 + 날짜 정렬 인덱스.
 
 파일 구성
     transactions.jsonl     거래 원본. append 전용(수정도 새 버전을 끝에 덧붙인다).
@@ -363,9 +363,9 @@ class StorageStats:
 
 
 class TransactionStore:
-    """거래 저장소. 로그 append 와 인덱스 슬롯 갱신을 함께 책임진다."""
+    """거래 저장소. 거래 데이터 append 와 인덱스 슬롯 갱신을 함께 책임진다."""
 
-    LOG_NAME = "transactions.jsonl"
+    TR_NAME = "transactions.jsonl"
     IDX_NAME = "transactions.idx"
     DATE_IDX_NAME = "transactions.date.idx"
     #: 고아 데이터 비율이 이 값을 넘으면 compact 안내를 띄운다.
@@ -373,14 +373,14 @@ class TransactionStore:
 
     def __init__(self, data_dir: Path) -> None:
         self.data_dir: Path = Path(data_dir)
-        self.log_path: Path = self.data_dir / self.LOG_NAME
+        self.tr_path: Path = self.data_dir / self.TR_NAME
         self.idx_path: Path = self.data_dir / self.IDX_NAME
         self.index: TransactionIndex = TransactionIndex(self.idx_path)
         self.date_idx_path: Path = self.data_dir / self.DATE_IDX_NAME
         self.date_index: DateIndex = DateIndex(self.date_idx_path)
         # compact 가 위치 인덱스를 고치기 전에 만들어 두는 복사본. 이 파일이 있으면 compact 가 끝나지 않은 것이다.
         self.compact_backup_path: Path = self.data_dir / (self.IDX_NAME + ".compact-backup")
-        self.compact_tmp_log_path: Path = self.log_path.with_suffix(".jsonl.tmp")
+        self.compact_tmp_tr_path: Path = self.tr_path.with_suffix(".jsonl.tmp")
         # import 가 위치 슬롯 묶음을 쓰기 전의 위치 파일 크기를 적어 두는 파일. 있으면 import 가 끝나지 않은 것이다.
         self.import_journal_path: Path = self.data_dir / (self.IDX_NAME + ".import-pending")
         # 16바이트 슬롯 쓰기가 도중에 끊겨도 원래 길이/슬롯으로 되돌릴 수 있게 한다.
@@ -390,10 +390,10 @@ class TransactionStore:
 
     # ------------------------------------------------------------------ 초기화
     def ensure_files(self) -> None:
-        """최초 실행 시 빈 로그/인덱스 파일을 만들어 둔다."""
+        """최초 실행 시 빈 거래 데이터/인덱스 파일을 만들어 둔다."""
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        if not self.log_path.exists():
-            self.log_path.touch()
+        if not self.tr_path.exists():
+            self.tr_path.touch()
         self._recover_interrupted_compact()  # 위치 인덱스를 통째로 되돌릴 수 있으므로 가장 먼저
         self.index.ensure()
         self._recover_interrupted_import()  # 조각 정리보다 먼저: import 의 조각은 묶음째 잘라 낸다
@@ -424,9 +424,9 @@ class TransactionStore:
     def _iter_live_by_id(self) -> Iterator[Transaction]:
         """id 오름차순으로 살아있는 거래를 하나씩 yield 한다(날짜 인덱스를 쓰지 않는다)."""
         total = self.index.slot_count()
-        if total == 0 or not self.log_path.exists():
+        if total == 0 or not self.tr_path.exists():
             return
-        with self.idx_path.open("rb") as idx, self.log_path.open("rb") as log:
+        with self.idx_path.open("rb") as idx, self.tr_path.open("rb") as tr:
             for slot in range(total):
                 idx.seek(slot * SLOT_SIZE)
                 raw = idx.read(SLOT_SIZE)
@@ -435,7 +435,7 @@ class TransactionStore:
                 start, end = SLOT_STRUCT.unpack(raw)
                 if (start, end) == DELETED_SLOT:
                     continue
-                yield self._read_at(log, start, end)
+                yield self._read_at(tr, start, end)
 
     def category_counts(self) -> dict[str, int]:
         """살아있는 거래를 처음부터 세어 카테고리별 건수를 돌려준다(O(n), 기록을 다시 맞출 때만 쓴다)."""
@@ -456,9 +456,9 @@ class TransactionStore:
 
     # ------------------------------------------------------------------ 쓰기
     def _append_record(self, tx: Transaction) -> tuple[int, int]:
-        """레코드를 로그 끝에 붙이고 (start, end) byte 범위를 돌려준다."""
+        """레코드를 거래 데이터 파일 끝에 붙이고 (start, end) byte 범위를 돌려준다."""
         payload = tx.to_json().encode("utf-8")
-        with self.log_path.open("ab") as fp:
+        with self.tr_path.open("ab") as fp:
             fp.seek(0, os.SEEK_END)
             start = fp.tell()
             fp.write(payload)
@@ -491,7 +491,7 @@ class TransactionStore:
     def append_transactions(self, transactions: Iterable[Transaction]) -> int:
         """여러 거래를 한 번에 저장하고 저장한 건수를 돌려준다(import 용).
 
-        로그 레코드와 인덱스 슬롯은 각각 한 번에 이어 쓰고(fsync 도 파일당 한 번), 날짜 인덱스는 모아서
+        거래 데이터 레코드와 인덱스 슬롯은 각각 한 번에 이어 쓰고(fsync 도 파일당 한 번), 날짜 인덱스는 모아서
         한 번에 병합한다. 옛 날짜가 섞여 있어도 행마다 파일을 다시 쓰지 않는다.
         거래 객체는 모으지 않고, 슬롯과 날짜 키는 건당 16+12바이트 배열에 담는다.
         """
@@ -504,20 +504,20 @@ class TransactionStore:
         slots = bytearray()
         ordinals = array("I")
         ids = array("Q")
-        with self.log_path.open("ab") as log:
-            log.seek(0, os.SEEK_END)
-            offset = log.tell()
+        with self.tr_path.open("ab") as tr:
+            tr.seek(0, os.SEEK_END)
+            offset = tr.tell()
             for tx in transactions:
                 stored = tx.replace_fields(id=next_id + count)
                 payload = stored.to_json().encode("utf-8")
-                log.write(payload + b"\n")
+                tr.write(payload + b"\n")
                 slots += SLOT_STRUCT.pack(offset, offset + len(payload))
                 offset += len(payload) + 1
                 count += 1
                 ordinals.append(date_ordinal(stored.date))
                 ids.append(stored.id)
-            log.flush()
-            os.fsync(log.fileno())
+            tr.flush()
+            os.fsync(tr.fileno())
         if not count:
             return 0
         # append_transaction() 과 같은 이유로 날짜 항목을 슬롯보다 먼저 쓴다. 슬롯 묶음을 쓰기 전에
@@ -592,7 +592,7 @@ class TransactionStore:
         return tx
 
     def delete_transaction(self, tx_id: int) -> Transaction:
-        """인덱스 슬롯을 0으로 초기화해 삭제한다. 로그 파일은 건드리지 않는다."""
+        """인덱스 슬롯을 0으로 초기화해 삭제한다. 거래 데이터 파일은 건드리지 않는다."""
         self.ensure_files()
         tx = self.read_transaction(tx_id)
         if tx is None:
@@ -612,7 +612,7 @@ class TransactionStore:
         raw = fp.read(end - start)
         if len(raw) != end - start:
             raise StorageError(
-                f"로그 파일에서 {end - start}바이트를 읽지 못했습니다(offset={start}).",
+                f"거래 데이터 파일에서 {end - start}바이트를 읽지 못했습니다(offset={start}).",
                 "transactions.idx 와 transactions.jsonl 이 어긋났습니다. 백업본으로 복구하세요.",
             )
         return Transaction.from_json(raw)
@@ -622,9 +622,9 @@ class TransactionStore:
         slot = self.index.read_slot(tx_id)
         if slot is None:
             return None
-        if not self.log_path.exists():
+        if not self.tr_path.exists():
             return None
-        with self.log_path.open("rb") as fp:
+        with self.tr_path.open("rb") as fp:
             return self._read_at(fp, slot[0], slot[1])
 
     def get_transaction(self, tx_id: int) -> Transaction:
@@ -648,7 +648,7 @@ class TransactionStore:
         `date_from`/`date_to`(YYYY-MM-DD, 포함)를 주면 이진 탐색으로 그 구간만 읽는다.
         list/search/summary/export/category remove 가 모두 이 제너레이터 하나를 소비한다.
         """
-        if not self.log_path.exists():
+        if not self.tr_path.exists():
             return
         lo = self.date_index.bisect_left((date_ordinal(date_from), 0)) if date_from else 0
         hi = (
@@ -660,7 +660,7 @@ class TransactionStore:
         # 예전에는 둘 다 슬롯을 읽다 실패하면 조용히 건너뛰어서, 손상돼도 거래가 빠진 결과가
         # 종료 코드 0 으로 나왔고 id 0 은 음수 seek 로 엉뚱한 입출력 오류가 났다.
         slot_count = self.index.slot_count()
-        with self.idx_path.open("rb") as idx, self.log_path.open("rb") as log:
+        with self.idx_path.open("rb") as idx, self.tr_path.open("rb") as tr:
             for ordinal, tx_id in self.date_index.iter_desc(lo, hi):
                 if tx_id == 0:  # id 는 1부터라 정상적으로는 생길 수 없다
                     raise StorageError(
@@ -676,14 +676,14 @@ class TransactionStore:
                 start, end = SLOT_STRUCT.unpack(raw)
                 if (start, end) == DELETED_SLOT:  # 삭제된 거래의 항목
                     continue
-                tx = self._read_at(log, start, end)
+                tx = self._read_at(tr, start, end)
                 if date_ordinal(tx.date) != ordinal:  # 날짜가 바뀌기 전의 옛 항목
                     continue
                 yield tx
 
     # ------------------------------------------------------------------ 유지보수
     def stats(self) -> StorageStats:
-        """살아있는 레코드 수/바이트와 로그 파일 크기를 집계한다."""
+        """살아있는 레코드 수/바이트와 거래 데이터 파일 크기를 집계한다."""
         total = self.index.slot_count()
         live_count = 0
         live_size = 0
@@ -698,7 +698,7 @@ class TransactionStore:
                         continue
                     live_count += 1
                     live_size += end - start + 1  # 개행 1바이트 포함
-        log_size = self.log_path.stat().st_size if self.log_path.exists() else 0
+        log_size = self.tr_path.stat().st_size if self.tr_path.exists() else 0
         return StorageStats(
             slot_count=total, live_count=live_count, log_size=log_size, live_size=live_size
         )
@@ -708,16 +708,16 @@ class TransactionStore:
         return stats.log_size > 0 and stats.orphan_ratio >= self.COMPACT_HINT_RATIO
 
     def compact(self) -> StorageStats:
-        """살아있는 레코드만 새 로그로 옮겨 쓰고 원자적으로 교체한다.
+        """살아있는 레코드만 새 거래 데이터 파일로 옮겨 쓰고 원자적으로 교체한다.
 
         인덱스는 슬롯 개수/순서를 그대로 둔 채 offset 값만 갱신하므로
         id 재매핑이 필요 없다.
         """
         self.ensure_files()
         before = self.stats()
-        tmp_path = self.compact_tmp_log_path
-        # 아래 반복문은 위치 인덱스의 슬롯을 하나씩 제자리에서 고쳐서, 도중에 꺼지면 일부 슬롯만 새 로그
-        # 위치를 가리킨 채 옛 로그와 짝지어진다(엉뚱한 곳을 읽음). 그래서 고치기 전에 복사본을 만들고,
+        tmp_path = self.compact_tmp_tr_path
+        # 아래 반복문은 위치 인덱스의 슬롯을 하나씩 제자리에서 고쳐서, 도중에 꺼지면 일부 슬롯만 새 거래 데이터
+        # 위치를 가리킨 채 옛 거래 데이터와 짝지어진다(엉뚱한 곳을 읽음). 그래서 고치기 전에 복사본을 만들고,
         # 다음 실행 때 _recover_interrupted_compact() 가 복사본으로 되돌린다. 임시 이름으로 다 쓰고
         # 확정한 뒤 이름을 바꾸므로, 복사본 이름의 파일이 있으면 그 복사본은 항상 완전하다.
         backup_tmp = self.compact_backup_path.with_name(self.compact_backup_path.name + ".tmp")
@@ -726,7 +726,7 @@ class TransactionStore:
             os.fsync(fp.fileno())
         os.replace(backup_tmp, self.compact_backup_path)
         fsync_dir(self.data_dir)
-        with self.idx_path.open("r+b") as idx, self.log_path.open("rb") as src, tmp_path.open(
+        with self.idx_path.open("r+b") as idx, self.tr_path.open("rb") as src, tmp_path.open(
             "wb"
         ) as dst:
             total = self.index.slot_count()
@@ -749,31 +749,31 @@ class TransactionStore:
             os.fsync(dst.fileno())
             idx.flush()
             os.fsync(idx.fileno())
-        os.replace(tmp_path, self.log_path)  # 이 순간이 완료. 이후로는 새 로그와 새 위치 인덱스가 짝이다
-        fsync_dir(self.data_dir)  # 교체를 확정한 뒤에 복사본을 지워야, 꺼져도 옛 로그+새 인덱스가 되지 않는다
+        os.replace(tmp_path, self.tr_path)  # 이 순간이 완료. 이후로는 새 거래 데이터와 새 위치 인덱스가 짝이다
+        fsync_dir(self.data_dir)  # 교체를 확정한 뒤에 복사본을 지워야, 꺼져도 옛 거래 데이터+새 인덱스가 되지 않는다
         self.compact_backup_path.unlink()
         fsync_dir(self.data_dir)
-        self.rebuild_date_index()  # 삭제/옛 날짜 항목을 정리하고 새 로그 기준으로 다시 만든다
+        self.rebuild_date_index()  # 삭제/옛 날짜 항목을 정리하고 새 거래 데이터 기준으로 다시 만든다
         return before
 
     def _recover_interrupted_compact(self) -> None:
-        """끝나지 않은 compact 를 정리한다. 복사본이 있으면 임시 로그가 남았는지로 어디서 멈췄는지 판단한다.
+        """끝나지 않은 compact 를 정리한다. 복사본이 있으면 임시 거래 데이터 파일이 남았는지로 어디서 멈췄는지 판단한다.
 
-        - 임시 로그가 남음: 로그 교체 전에 멈춤 → 위치 인덱스를 복사본으로 되돌리고 임시 로그를 지운다
+        - 임시 거래 데이터 파일이 남음: 거래 데이터 교체 전에 멈춤 → 위치 인덱스를 복사본으로 되돌리고 임시 거래 데이터 파일을 지운다
           (compact 전 상태. 옛 줄 정리만 안 된 것이라 잃는 데이터는 없다).
-        - 임시 로그가 없음: 교체는 끝나고 복사본 삭제 전에 멈춤 → 새 로그와 새 인덱스가 이미 짝이라 복사본만 지운다.
+        - 임시 거래 데이터 파일이 없음: 교체는 끝나고 복사본 삭제 전에 멈춤 → 새 거래 데이터와 새 인덱스가 이미 짝이라 복사본만 지운다.
         """
         backup_tmp = self.compact_backup_path.with_name(self.compact_backup_path.name + ".tmp")
         if backup_tmp.exists():  # 복사본을 만드는 중에 멈춤. 위치 인덱스는 아직 그대로라 지우기만 하면 된다
             backup_tmp.unlink()
         if self.compact_backup_path.exists():
-            if self.compact_tmp_log_path.exists():
+            if self.compact_tmp_tr_path.exists():
                 os.replace(self.compact_backup_path, self.idx_path)
-                self.compact_tmp_log_path.unlink()
+                self.compact_tmp_tr_path.unlink()
                 self.recovered.append("지난 compact 가 끝나지 않아 compact 전 상태로 되돌렸습니다. 다시 실행하세요.")
             else:
                 self.compact_backup_path.unlink()
                 self.recovered.append("지난 compact 의 마무리(복사본 정리)를 끝냈습니다.")
             fsync_dir(self.data_dir)
-        elif self.compact_tmp_log_path.exists():  # 복사본 없이 남은 임시 로그는 쓰이지 않은 찌꺼기다
-            self.compact_tmp_log_path.unlink()
+        elif self.compact_tmp_tr_path.exists():  # 복사본 없이 남은 임시 거래 데이터 파일은 쓰이지 않은 찌꺼기다
+            self.compact_tmp_tr_path.unlink()
