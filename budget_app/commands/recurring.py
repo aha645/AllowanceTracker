@@ -8,7 +8,7 @@ from ..console import parse_rule_id, render_transactions
 from ..context import AppContext
 from ..decorators import EXIT_OK, command
 from ..formatter import format_amount, format_table
-from ..validators import format_tags, validate_month
+from ..validators import format_tags
 
 
 @command
@@ -67,8 +67,8 @@ def cmd_recurring_remove(ctx: AppContext, args: argparse.Namespace) -> int:
 @command
 def cmd_recurring_apply(ctx: AppContext, args: argparse.Namespace) -> int:
     """특정 월에 반복 거래를 생성한다(이미 적용된 규칙은 건너뜀)."""
-    month = validate_month(args.month)
-    created, skipped = ctx.recurring.apply_month(month)
+    created, skipped = ctx.recurring.apply_month(args.month)  # 월 형식은 서비스가 검증한다
+    month = args.month.strip()  # 검증을 통과했다면 앞뒤 공백만 뺀 값이 정규화된 월이다(validate_month)
     if not created and not skipped:
         print("[안내] 등록된 반복 규칙이 없습니다.")
         return EXIT_OK
