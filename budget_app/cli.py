@@ -14,21 +14,16 @@ from pathlib import Path
 from typing import Callable, NoReturn
 
 from . import __version__
+from .commands.budget import cmd_budget_list, cmd_budget_remove, cmd_budget_set, cmd_budget_show
 from .commands.category import cmd_category_add, cmd_category_list, cmd_category_remove
-from .commands.data import cmd_backup, cmd_compact, cmd_export, cmd_import
+from .commands.files import cmd_backup, cmd_compact, cmd_export, cmd_import
 from .commands.recurring import (
     cmd_recurring_add,
     cmd_recurring_apply,
     cmd_recurring_list,
     cmd_recurring_remove,
 )
-from .commands.report import (
-    cmd_budget_list,
-    cmd_budget_remove,
-    cmd_budget_set,
-    cmd_budget_show,
-    cmd_summary,
-)
+from .commands.summary import cmd_summary
 from .commands.transaction import cmd_add, cmd_delete, cmd_list, cmd_search, cmd_update
 from .console import print_error
 from .context import AppContext
@@ -100,13 +95,15 @@ def _add_transaction_parsers(sub: argparse._SubParsersAction[HintArgumentParser]
     p_delete.set_defaults(func=cmd_delete)
 
 
-def _add_report_parsers(sub: argparse._SubParsersAction[HintArgumentParser]) -> None:
+def _add_summary_parsers(sub: argparse._SubParsersAction[HintArgumentParser]) -> None:
     p_summary = sub.add_parser("summary", help="월별 요약 + 예산 사용률")
     p_summary.add_argument("--month", required=True, metavar="YYYY-MM", help="요약할 달")
     p_summary.add_argument("--top", type=int, default=DEFAULT_TOP,
                            help=f"카테고리 TOP N (기본값: {DEFAULT_TOP})")
     p_summary.set_defaults(func=cmd_summary)
 
+
+def _add_budget_parsers(sub: argparse._SubParsersAction[HintArgumentParser]) -> None:
     p_budget = sub.add_parser("budget", help="예산 설정/조회")
     bud_sub = p_budget.add_subparsers(dest="budget_command", metavar="<set|show|list|remove>")
     p_budget.set_defaults(func=_require_subcommand("budget", "set | show | list | remove"))
@@ -143,7 +140,7 @@ def _add_category_parsers(sub: argparse._SubParsersAction[HintArgumentParser]) -
     c_remove.set_defaults(func=cmd_category_remove)
 
 
-def _add_data_parsers(sub: argparse._SubParsersAction[HintArgumentParser]) -> None:
+def _add_file_parsers(sub: argparse._SubParsersAction[HintArgumentParser]) -> None:
     p_import = sub.add_parser("import", help="CSV 가져오기")
     p_import.add_argument("--from", dest="source", required=True, metavar="PATH", help="CSV 파일 경로")
     p_import.set_defaults(func=cmd_import)
@@ -219,9 +216,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", metavar="<command>")
     _add_transaction_parsers(sub)
-    _add_report_parsers(sub)
+    _add_summary_parsers(sub)
+    _add_budget_parsers(sub)
     _add_category_parsers(sub)
-    _add_data_parsers(sub)
+    _add_file_parsers(sub)
     _add_recurring_parsers(sub)
     return parser
 

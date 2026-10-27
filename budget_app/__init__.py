@@ -12,7 +12,7 @@
     decorators.py  공통 관심사(예외 처리/로그/시간 측정) 데코레이터
     context.py     저장소/서비스 조립(AppContext)
     console.py     커맨드 공용 입출력 보조
-    commands/      커맨드 핸들러(거래/집계/카테고리/데이터/반복)
+    commands/      커맨드 핸들러(transaction / summary / budget / category / recurring / files)
     cli.py         argparse 파서 정의와 main
     __main__.py    `python -m budget_app` 진입점
 """

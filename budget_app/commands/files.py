@@ -1,4 +1,4 @@
-"""데이터 파일 커맨드: import / export / compact / backup."""
+"""데이터 파일 커맨드: import / export (CSV), compact (저장 파일 정리), backup."""
 
 from __future__ import annotations
 
