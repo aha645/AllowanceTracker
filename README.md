@@ -1,6 +1,6 @@
 # AllowanceTracker — 콘솔 가계부 (`budget_app`)
 
-표준 라이브러리만 사용하는 CLI 가계부입니다. 거래를 기록/검색/수정/삭제하고, 월별 요약과 예산 사용률을 확인하며, CSV 로 주고받을 수 있습니다.
+표준 라이브러리만 사용하는 CLI(Command-Line Interface, 터미널에서 명령으로 실행하는 프로그램) 가계부입니다. 거래를 기록/검색/수정/삭제하고, 월별 요약과 예산 사용률을 확인하며, CSV(Comma-Separated Values, 쉼표로 칸을 나눈 텍스트 표) 로 주고받을 수 있습니다.
 
 ## 1. 환경 구축
 
@@ -24,6 +24,8 @@ data/
 ├── budgets.jsonl            월별 예산
 └── recurring.jsonl          반복 거래 규칙 (보너스)
 ```
+
+확장자 `.jsonl` 은 JSONL(JSON Lines: 한 줄에 JSON 객체 하나씩 쓰는 텍스트 형식, JSON 은 JavaScript Object Notation), `.idx` 는 index(색인)의 줄임말입니다. 거래 id 는 `TX-N`(TX = Transaction), 반복 규칙 id 는 `RC-N`(RC = Recurring)으로 표시합니다.
 
 - 구성: `cli`(명령 연결) → `commands/`(기능별 핸들러) → `services`·`file_services`(규칙) → `transaction_store`·`stores`(파일 저장), 공통 처리는 데코레이터 `@command`. 모듈별 역할은 4부 "코드 구성" 참고.
 
@@ -50,13 +52,13 @@ python -m unittest tests.test_requirement_checklist -v -k 000 -k 010 -k 020 -k 0
 | `060` | `test_060_category` | 카테고리 추가·중복 차단·숫자로만 된 이름 거부(대화형 번호 입력과 헷갈림)·목록, 사용 중인 카테고리 삭제 거부, 미사용 삭제, 없는 이름 오류(삭제·거부 뒤마다 `category list` 로 남은 목록 확인), 사용 건수가 실제 거래 수와 같은지, 건수 0 이면 거래를 훑지 않고 바로 삭제 |
 | `070` | `test_070_update` | 대화형 수정(엔터는 유지, `-` 는 비움)으로 금액·메모 변경 후 검색·요약에 반영, 카테고리를 묻기 전에 등록된 카테고리 목록(번호)을 보여주는지, 없는 id 오류 |
 | `080` | `test_080_delete` | `--yes` 없이 터미널에서 실행하면 확인을 묻고 N 이면 지우지 않는지, 삭제 후 목록에서 그 거래만 빠지고 요약·카테고리 사용 건수에 반영되는지, 이미 삭제한 id·없는 id 오류, `TX-1_0`·`TX-+3` 처럼 숫자만이 아닌 id 는 delete·update 모두 거부(다른 거래를 건드리지 않음) |
-| `090` | `test_090_import` | CSV 가져오기(정상 2건이 쉼표 든 메모·여러 태그까지 그대로 저장, 잘못된 행 2건은 행 번호·사유와 함께 건너뜀), 읽을 수 없는 파일(UTF-8 아님·닫히지 않은 따옴표)과 폴더 경로는 아무것도 저장하지 않음, 오류 사유 20건 상한, 메모리 부족 안내, 실패한 import 뒤 거래 수가 그대로인지 |
+| `090` | `test_090_import` | CSV 가져오기(정상 2건이 쉼표 든 메모·여러 태그까지 그대로 저장, 잘못된 행 2건은 행 번호·사유와 함께 건너뜀), 읽을 수 없는 파일(UTF-8(Unicode Transformation Format 8-bit, 한글을 포함한 문자를 바이트로 저장하는 표준 방식) 아님·닫히지 않은 따옴표)과 폴더 경로는 아무것도 저장하지 않음, 오류 사유 20건 상한, 메모리 부족 안내, 실패한 import 뒤 거래 수가 그대로인지 |
 | `095` | `test_095_export` | 월·기간 내보내기와 고정 헤더, 쉼표가 든 메모 보존, 삭제한 거래 제외, 도중에 멈춰도 원래 파일 유지, 조건 없으면 오류, `--from`·`--to` 중 하나만 주면 오류, 데이터 폴더 자체나 그 안(저장 파일·백업 위치, 링크나 대소문자만 다른 경로로 가리켜도)으로 내보내면 거부하고 저장 파일 그대로, 저장 파일 3개 존재 |
 | `100` | `test_100_applied_logging_and_exit_codes` | `--verbose` 일 때만 로그·실행 시간 출력, 데코레이터가 함수 이름·설명 보존, 종료 코드 0·1·130 과 스택트레이스 미노출 |
 | `110` | `test_110_applied_table_format` | 표 머리글·구분선, 수입 `+`·지출 `-` 부호와 천 단위 구분, 예산 막대 |
 | `120` | `test_120_applied_atomic_storage` | 파일 교체 실패 시 원본 유지, update·delete 때 파일이 바뀌는 방식, 카테고리 건수가 실제보다 적어지지 않는지와 다시 세기, 덜 써진 위치 칸 조각 정리, 중단된 compact 되돌리기·마무리 |
 | `130` | `test_130_applied_backup` | `backup` 이 날짜·시각 이름의 폴더를 만들고, 거래·카테고리·예산 파일(`transactions.jsonl`·`categories.jsonl`·`budgets.jsonl`)을 원본과 같은 내용으로 복사하는지 |
-| `140` | `test_140_applied_recurring` | 반복 거래 추가 후 `recurring list` 의 규칙 내용, 31일 규칙이 윤년 2월 29일 거래로 실제 저장되는지, 같은 달 재적용 건너뜀(거래 수 그대로), 거래 저장 뒤 기록 전에 멈춰도 중복 생성 안 함, 규칙이 쓰는 카테고리는 삭제 거부, 규칙 삭제 후 새 규칙이 지운 번호를 다시 받지 않고 같은 달에도 적용되는지 |
+| `140` | `test_140_applied_recurring` | 반복 거래 추가 후 `recurring list` 의 규칙 내용, 31일 규칙이 윤년 2월 29일 거래로 실제 저장되는지, 같은 달 재적용 건너뜀(거래 수 그대로), 거래 저장 뒤 기록 전에 멈춰도 중복 생성 안 함, 규칙이 쓰는 카테고리는 삭제 거부, 규칙 삭제 후 새 규칙이 지운 번호를 다시 받지 않고 같은 달에도 적용되는지, `--day 1_0`(밑줄 표기)·`RC-+1`(부호가 붙은 id) 거부 |
 | `150` | `test_150_applied_date_index` | 옛 날짜 import·add 가 날짜 순서 위치에 들어가는지, 날짜 수정·삭제 반영, `--limit` 만큼만 읽기, compact·파일 삭제 후 재생성, 저장·import 중단 복구, 날짜 인덱스 손상 감지 |
 
 ## 2. 10대 기능 실행 결과
@@ -530,7 +532,7 @@ $ python -m budget_app delete --id TX-999999 --yes
 <details>
 <summary><b>9. import — CSV 가져오기</b></summary>
 
-유효한 행만 등록하고 잘못된 행은 사유와 함께 건너뜀 → `list` 에서 쉼표 든 메모·여러 태그까지 그대로인지 확인 → 요약에 반영
+유효한 행만 등록하고 잘못된 행은 사유와 함께 건너뜀 → `list` 에서 쉼표 든 메모·여러 태그까지 그대로인지 확인 → 요약에 반영 (`cat > import.csv <<'EOF'` 는 다음 `EOF`(End Of File) 줄 전까지를 파일 내용으로 쓰는 셸 문법)
 
 ```text
 $ cat > import.csv <<'EOF'
@@ -659,7 +661,7 @@ $ python -m budget_app --verbose list --limit 1
 
 | 컬럼 | 필수 | 설명 |
 |---|---|---|
-| `date` | ✅ | `YYYY-MM-DD` |
+| `date` | ✅ | `YYYY-MM-DD` (연 4자리-월 2자리-일 2자리) |
 | `type` | ✅ | `income` / `expense` |
 | `category` | ✅ | 이미 등록된 카테고리 |
 | `amount` | ✅ | 양의 정수. 천 단위 쉼표 허용(`"600,000"`, CSV 에서는 따옴표로 감쌈) |
@@ -928,7 +930,7 @@ transactions.jsonl
 | `file_services.py` | CSV 가져오기·내보내기, 백업 | `CsvService`, `BackupService` |
 | `validators.py` | 날짜·월·타입·금액·일자·태그 검증과 정규화 | `validate_date`, `validate_amount` … |
 | `transaction_store.py` | 거래 저장 엔진: `transactions.jsonl` · `.idx` · `.date.idx` 읽기·쓰기, 시작 시 복구, `compact` | `TransactionStore`, `TransactionIndex`, `DateIndex` |
-| `durability.py` | 파일을 꺼져도 안전한 순서로 확정(`fsync`, 임시 파일 교체), 위치 칸 되돌리기 기록 | `fsync_dir`, `atomic_write`, `SlotUndo` |
+| `durability.py` | 파일을 꺼져도 안전한 순서로 확정(`fsync`(file synchronize: 운영체제가 들고 있는 내용을 디스크에 실제로 쓰게 하는 요청), 임시 파일 교체), 위치 칸 되돌리기 기록 | `fsync_dir`, `atomic_write`, `SlotUndo` |
 | `stores.py` | 카테고리·예산·반복 규칙 JSONL (임시 파일 + `os.replace` 로 전체 재작성) | `CategoryStore`, `BudgetStore`, `RecurringStore` |
 | `models.py` | 데이터 모델과 예외(원인 `message` + 힌트 `hint`) | `Transaction`, `ValidationError`, `StorageError` |
 | `formatter.py` | 외부 라이브러리 없이 한글 폭을 계산해 표 정렬, 금액·예산 막대 형식 | `format_table`, `display_width`, `format_amount`, `format_bar` |
@@ -940,8 +942,8 @@ transactions.jsonl
 |---|---|---|
 | `@command` | 아래 셋을 `handle_errors(log_call(timeit(func)))` 순서로 묶음 | — |
 | `@handle_errors` | 예외를 잡아 종료 코드로 바꿈. `BudgetAppError`·파일 없음·권한·입출력·메모리 부족 → `[오류]`+`[힌트]`, 종료 코드 1 / Ctrl+C·입력 끝 → `[중단]`, 130 / 그 밖의 예기치 못한 오류 → `[오류] 예기치 못한 오류…` + `--verbose` 안내, 1 / 정상 0. 스택트레이스는 사용자에게 보이지 않고 `--verbose` 일 때만 로그로 남김 | stderr |
-| `@log_call` | 핸들러 시작·종료 기록 (`-> cmd_list 시작`, `<- cmd_list 종료`) | `--verbose` 일 때만 stderr |
-| `@timeit` | 실행 시간 측정 (`cmd_list 실행 시간 0.28ms`) | `--verbose` 일 때만 stderr |
+| `@log_call` | 핸들러 시작·종료 기록 (`-> cmd_list 시작`, `<- cmd_list 종료`) | `--verbose` 일 때만 stderr(standard error, 오류·로그용 출력) |
+| `@timeit` | 실행 시간 측정 (`cmd_list 실행 시간 0.28ms`, ms = millisecond, 1/1000초) | `--verbose` 일 때만 stderr |
 
 모두 `functools.wraps` 를 써서 원래 함수 이름과 설명이 유지됩니다(테스트 100 에서 확인).
 
@@ -952,7 +954,7 @@ transactions.jsonl
 | `transactions.jsonl` | 거래 **내용** 원본 (JSON 1줄 = 1건) | 항상 끝에만 추가 (수정 전 내용도 남음) |
 | `transactions.idx` | **id → 현재 내용의 위치**. id N 의 위치는 N번째 16바이트 칸에 있고, 삭제하면 그 칸을 `(0, 0)` 으로 바꿈 (아래에서는 이 칸을 **위치 칸** 이라고 부름) | add·import 는 끝에 칸 추가, update·delete 는 그 칸 덮어쓰기 |
 | `transactions.date.idx` | **(거래일자, id) 날짜순 목록** (항목당 12바이트) — 최신순·기간 조회용 | 끝에 추가 또는 병합 후 교체 |
-| `transactions.idx.slot-undo` | 위치 칸 하나를 바꾸기 전의 위치 파일 길이와 원래 16바이트 (+ SHA-256) | 칸을 바꾸는 동안에만 있음. 남아 있으면 다음 실행 때 되돌림 |
+| `transactions.idx.slot-undo` | 위치 칸 하나를 바꾸기 전의 위치 파일 길이와 원래 16바이트 (+ SHA-256(Secure Hash Algorithm 256-bit, 내용이 조금만 바뀌어도 값이 달라지는 32바이트 요약값)) | 칸을 바꾸는 동안에만 있음. 남아 있으면 다음 실행 때 되돌림 |
 | `categories.jsonl` · `budgets.jsonl` | 카테고리와 **사용 건수** / 월별 예산 | 임시 파일에 전체를 다시 쓴 뒤 `os.replace` 로 교체 |
 | `recurring.jsonl` | 반복 거래 규칙 (보너스). 삭제한 규칙은 `"removed": true` 로 표시해 남겨 번호를 다시 쓰지 않음 | 임시 파일에 전체를 다시 쓴 뒤 `os.replace` 로 교체 |
 | `backup/` | `backup` 명령이 만드는 백업 | 타임스탬프 폴더 |
@@ -971,7 +973,7 @@ $ od -t u8 data/transactions.idx
 0000120
 ```
 
-`transactions.date.idx` — 항목마다 날짜 번호(4바이트)와 id(8바이트)를 읽어 `날짜,id` 로 출력합니다. 날짜 번호는 파이썬 `date.toordinal()` 값이라, 1970-01-01 의 번호인 `719163` 을 빼고 하루 86400초를 곱해 `date` 로 바꿉니다. `-u` 를 빼면 UTC 보다 늦은 시간대(미국 등)에서 날짜가 하루 앞당겨 나옵니다. `date -r` 은 macOS 문법이고, 리눅스에서는 `date -u -d "@$(( ... ))"` 로 바꿉니다.
+`transactions.date.idx` — 항목마다 날짜 번호(4바이트)와 id(8바이트)를 읽어 `날짜,id` 로 출력하고, `IFS=,`(IFS = Internal Field Separator, 셸이 값을 나누는 구분자)로 두 값을 나눠 읽습니다. 날짜 번호는 파이썬 `date.toordinal()` 값이라, 1970-01-01 의 번호인 `719163` 을 빼고 하루 86400초를 곱해 `date` 로 바꿉니다. `-u`(UTC 기준) 를 빼면 UTC(Coordinated Universal Time, 협정 세계시) 보다 늦은 시간대(미국 등)에서 날짜가 하루 앞당겨 나옵니다. `date -r` 은 macOS 문법이고, 리눅스에서는 `date -u -d "@$(( ... ))"` 로 바꿉니다.
 
 ```text
 $ hexdump -v -e '1/4 "%u," 1/8 "%u\n"' data/transactions.date.idx | while IFS=, read -r val1 val2; do
@@ -997,7 +999,7 @@ done
 | 끝에 덧붙이기 (append) | 줄마다 키 이름이 들어 있어, 헤더나 열 순서를 신경 쓰지 않고 한 줄씩 덧붙이면 됨 | 첫 줄 헤더의 열 순서에 맞춰 덧붙여야 하고, 빈 파일이면 헤더부터 써야 함 |
 | 위치 파일(`transactions.idx`)과 함께 쓰기 | 줄바꿈이 `\n` 으로 바뀌어 저장되므로 한 줄 = 거래 1건. 시작·끝 바이트 위치로 그 줄만 바로 읽음 | 메모 안의 줄바꿈이 따옴표 안에 그대로 들어가 거래 1건이 여러 줄이 될 수 있어, "한 줄 = 거래 1건"이 보장되지 않음 |
 | 필드 추가 (스키마 변경) | 줄마다 키 이름이 있어서 옛 줄은 그대로 두고 새 줄에만 새 키를 쓰면 됨. 키가 없는 옛 줄은 읽는 코드가 기본값을 넣음(예: `source` 가 없으면 `""`) | 열 이름이 헤더 한 줄에만 있어, 열을 추가하면 헤더와 기존 행을 모두 고쳐 파일 전체를 다시 써야 함 |
-| 엑셀에서 열기·용량 | 엑셀로 바로 열 수 없음. 키 이름이 줄마다 반복돼 더 큼 | **열 수 있음**, 더 작음. 다만 `export` 파일은 BOM 없는 UTF-8 이라 더블클릭으로 열면 한글이 깨질 수 있어, 엑셀의 "데이터 → 텍스트/CSV 가져오기"에서 UTF-8 을 골라 열어야 함 |
+| 엑셀에서 열기·용량 | 엑셀로 바로 열 수 없음. 키 이름이 줄마다 반복돼 더 큼 | **열 수 있음**, 더 작음. 다만 `export` 파일은 BOM(Byte Order Mark, 파일 맨 앞에 붙여 인코딩을 알리는 표시) 없는 UTF-8 이라 더블클릭으로 열면 한글이 깨질 수 있어, 엑셀의 "데이터 → 텍스트/CSV 가져오기"에서 UTF-8 을 골라 열어야 함 |
 
 **결론:** 이 앱의 저장 엔진은 "끝에만 덧붙이고, 위치 파일로 그 줄만 바로 읽는다"가 핵심이라, 한 줄이 반드시 거래 1건인 JSONL 이 맞습니다. CSV 의 장점(엑셀 호환)은 사람과 주고받을 때만 필요하므로 `import`/`export` 에서만 씁니다.
 
@@ -1066,11 +1068,11 @@ python tools/bench_large.py              # 10만 건
 python tools/bench_large.py --n 300000   # 건수 지정 (100만 건은 몇 분 걸림)
 ```
 
-임시 폴더에 5년치(2020~2024) 거래 N건을 CSV 로 만들어 `import` 한 뒤, 명령마다 실제 CLI 를 새 프로세스로 실행해 **시간**과 **최대 메모리(RSS)** 를 잽니다. 끝나면 임시 폴더를 지우므로 `./data` 는 건드리지 않습니다. 파이썬 시작 비용이 모든 수치에 들어가므로, 빈 저장소에서 `category list` 를 실행한 값을 기준선으로 함께 봅니다. 0.1초 안팎의 짧은 명령은 실행할 때마다 ±0.1초쯤 흔들립니다.
+임시 폴더에 5년치(2020~2024) 거래 N건을 CSV 로 만들어 `import` 한 뒤, 명령마다 실제 CLI 를 새 프로세스로 실행해 **시간**과 **최대 메모리(RSS)** 를 잽니다. RSS(Resident Set Size)는 프로세스가 실제 물리 메모리(RAM, Random Access Memory)에 올려 두고 쓰는 크기이고, 표의 값은 실행하는 동안 가장 컸을 때의 값입니다(디스크로 밀려난 부분은 포함되지 않음). 끝나면 임시 폴더를 지우므로 `./data` 는 건드리지 않습니다. 파이썬 시작 비용이 모든 수치에 들어가므로, 빈 저장소에서 `category list` 를 실행한 값을 기준선으로 함께 봅니다. 0.1초 안팎의 짧은 명령은 실행할 때마다 ±0.1초쯤 흔들립니다.
 
 ### 결과
 
-측정 환경: macOS 15.7.4 (Intel Core i5-8600 3.1GHz 6코어, 메모리 32GB, PCIe SSD·APFS), Python 3.10.22 (`.venv`). 기준선(빈 저장소 `category list`)은 0.07s · 15~16MB 입니다.
+측정 환경: macOS 15.7.4 (Intel Core i5-8600 3.1GHz(gigahertz) 6코어, 메모리 32GB(gigabyte), PCIe(Peripheral Component Interconnect Express) 연결 SSD(Solid State Drive)·APFS(Apple File System)), Python 3.10.22 (`.venv` 가상 환경, virtual environment). 기준선(빈 저장소 `category list`)은 0.07s · 15~16MB 입니다. 표의 s 는 초(second), MB 는 megabyte, KB 는 kilobyte 입니다.
 
 표의 10만·30만·100만 건은 **저장소에 들어 있는 거래 수**이고 조회한 건수가 아닙니다. 예를 들어 `list --limit 20` 은 N건이 저장된 상태에서 최신 20건만 읽어 출력한 시간입니다.
 
@@ -1250,6 +1252,6 @@ Ctrl+C 나 오류로 멈추면 임시 파일도 바로 지웁니다. 이미 있�
 - 이 프로그램이 하는 확정(`fsync`)은 운영체제까지입니다. 디스크 장치가 받은 데이터를 자체 캐시에 들고 있다가 전원과 함께 잃는 경우는 막지 못합니다(macOS 의 일반 `fsync` 는 장치 캐시까지 비우지 않습니다).
 - 강제 종료 시험은 프로세스 강제 종료와 파일 바이트 손상으로 했고, 실제 전원 차단 장비로 시험하지는 않았습니다.
 - 되돌리기 기록(`.slot-undo`) 자체가 망가지면(길이가 72바이트가 아니거나, 앞 40바이트의 SHA-256 이 함께 저장한 해시와 다르면) 무엇을 되돌릴지 추측하지 않고 `[오류]` 로 멈춥니다. import 진행 기록(`.import-pending`)도 내용이 숫자가 아니거나 16의 배수가 아니면 같은 방식으로 멈춥니다.
-- `categories.jsonl`·`budgets.jsonl`·`recurring.jsonl` 에 읽을 수 없는 줄(JSON 문법 오류, 빠진 키, 숫자 자리의 글자 등)이 있으면 고치지 않고 `[오류] categories.jsonl 2번째 줄의 형식이 올바르지 않습니다(…)` 처럼 파일과 줄 번호를 알리고 멈춥니다.
+- `categories.jsonl`·`budgets.jsonl`·`recurring.jsonl` 에 읽을 수 없는 줄이 있으면 고치지 않고 파일 이름과 줄 번호를 담은 `[오류]` 로 멈춥니다. JSON 문법이 틀린 줄은 `[오류] categories.jsonl 2번째 줄을 읽을 수 없습니다: …`, 문법은 맞지만 키가 빠졌거나 숫자 자리에 글자가 든 줄은 `[오류] categories.jsonl 2번째 줄의 형식이 올바르지 않습니다(…)` 입니다.
 - 디스크 고장이나 직접 편집으로 파일 내용 자체가 망가진 경우는 위 순서로 막을 수 없습니다. `backup` 으로 만든 폴더의 파일을 `data/` 에 복사해 되돌리세요.
 - 같은 `data-dir` 을 여러 프로세스가 동시에 쓰는 것은 지원하지 않습니다.
