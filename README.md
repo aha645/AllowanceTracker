@@ -624,7 +624,7 @@ transactions.jsonl
 <details>
 <summary><b>공통 — 예외 처리 · 종료 코드 · 로그</b></summary>
 
-오류는 스택트레이스 없이 `[오류]`+`[힌트]`, 정상 0 / 오류 1 / 사용법 오류 2 / Ctrl+C 130, `--verbose` 일 때만 로그
+오류는 스택트레이스 없이 `[오류]`+`[힌트]`, 정상 0 / 오류 1 / 사용법 오류 2 / Ctrl+C 130, `--verbose` 일 때만 로그(실행 시간은 ms(millisecond, 1/1000초) 단위)
 
 ```text
 $ python -m budget_app delete --id TX-999999 --yes
@@ -941,9 +941,9 @@ transactions.jsonl
 | 데코레이터 | 하는 일 | 출력 |
 |---|---|---|
 | `@command` | 아래 셋을 `handle_errors(log_call(timeit(func)))` 순서로 묶음 | — |
-| `@handle_errors` | 예외를 잡아 종료 코드로 바꿈. `BudgetAppError`·파일 없음·권한·입출력·메모리 부족 → `[오류]`+`[힌트]`, 종료 코드 1 / Ctrl+C·입력 끝 → `[중단]`, 130 / 그 밖의 예기치 못한 오류 → `[오류] 예기치 못한 오류…` + `--verbose` 안내, 1 / 정상 0. 스택트레이스는 사용자에게 보이지 않고 `--verbose` 일 때만 로그로 남김 | stderr |
-| `@log_call` | 핸들러 시작·종료 기록 (`-> cmd_list 시작`, `<- cmd_list 종료`) | `--verbose` 일 때만 stderr(standard error, 오류·로그용 출력) |
-| `@timeit` | 실행 시간 측정 (`cmd_list 실행 시간 0.28ms`, ms = millisecond, 1/1000초) | `--verbose` 일 때만 stderr |
+| `@handle_errors` | 예외를 잡아 종료 코드로 바꿈. `BudgetAppError`·파일 없음·권한·입출력·메모리 부족 → `[오류]`+`[힌트]`, 종료 코드 1 / Ctrl+C·입력 끝 → `[중단]`, 130 / 그 밖의 예기치 못한 오류 → `[오류] 예기치 못한 오류…` + `--verbose` 안내, 1 / 정상 0. 스택트레이스는 사용자에게 보이지 않고 `--verbose` 일 때만 로그로 남김 | stderr(standard error, 오류·로그용 출력) |
+| `@log_call` | 핸들러 시작·종료 기록 (`-> cmd_list 시작`, `<- cmd_list 종료`) | `--verbose` 일 때만 stderr |
+| `@timeit` | 실행 시간 측정 (`cmd_list 실행 시간 0.28ms`) | `--verbose` 일 때만 stderr |
 
 모두 `functools.wraps` 를 써서 원래 함수 이름과 설명이 유지됩니다(테스트 100 에서 확인).
 
@@ -973,7 +973,7 @@ $ od -t u8 data/transactions.idx
 0000120
 ```
 
-`transactions.date.idx` — 항목마다 날짜 번호(4바이트)와 id(8바이트)를 읽어 `날짜,id` 로 출력하고, `IFS=,`(IFS = Internal Field Separator, 셸이 값을 나누는 구분자)로 두 값을 나눠 읽습니다. 날짜 번호는 파이썬 `date.toordinal()` 값이라, 1970-01-01 의 번호인 `719163` 을 빼고 하루 86400초를 곱해 `date` 로 바꿉니다. `-u`(UTC 기준) 를 빼면 UTC(Coordinated Universal Time, 협정 세계시) 보다 늦은 시간대(미국 등)에서 날짜가 하루 앞당겨 나옵니다. `date -r` 은 macOS 문법이고, 리눅스에서는 `date -u -d "@$(( ... ))"` 로 바꿉니다.
+`transactions.date.idx` — 항목마다 날짜 번호(4바이트)와 id(8바이트)를 읽어 `날짜,id` 로 출력하고, `IFS=,`(IFS = Internal Field Separator, 셸이 값을 나누는 구분자)로 두 값을 나눠 읽습니다. 날짜 번호는 파이썬 `date.toordinal()` 값이라, 1970-01-01 의 번호인 `719163` 을 빼고 하루 86400초를 곱해 `date` 로 바꿉니다. `-u`(UTC(Coordinated Universal Time, 협정 세계시) 기준) 를 빼면 UTC 보다 늦은 시간대(미국 등)에서 날짜가 하루 앞당겨 나옵니다. `date -r` 은 macOS 문법이고, 리눅스에서는 `date -u -d "@$(( ... ))"` 로 바꿉니다.
 
 ```text
 $ hexdump -v -e '1/4 "%u," 1/8 "%u\n"' data/transactions.date.idx | while IFS=, read -r val1 val2; do
