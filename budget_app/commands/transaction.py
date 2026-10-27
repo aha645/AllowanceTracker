@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Callable, TypeVar
 
 from ..console import (
+    build_criteria,
     maybe_hint_compact,
     parse_tx_id,
     prompt_until_valid,
@@ -23,40 +24,15 @@ from ..models import (
     Transaction,
     ValidationError,
 )
-from ..services import SearchCriteria
 from ..validators import (
     format_tags,
     parse_tags,
     validate_amount,
     validate_date,
-    validate_month,
     validate_type,
 )
 
 T = TypeVar("T")
-
-
-def build_criteria(ctx: AppContext, args: argparse.Namespace) -> SearchCriteria:
-    """search/export 공통 필터 옵션을 검증해 SearchCriteria 로 만든다."""
-    date_from = validate_date(args.date_from) if args.date_from else None
-    date_to = validate_date(args.date_to) if args.date_to else None
-    month = validate_month(args.month) if args.month else None
-    if date_from and date_to and date_from > date_to:
-        raise ValidationError(
-            f"기간이 뒤집혔습니다: --from {date_from} > --to {date_to}",
-            "--from 에는 더 이른 날짜를 지정하세요.",
-        )
-    category = ctx.categories.validate(args.category) if args.category else None
-    type_ = validate_type(args.type) if args.type else None
-    return SearchCriteria(
-        date_from=date_from,
-        date_to=date_to,
-        month=month,
-        category=category,
-        type=type_,
-        query=args.query,
-        tag=args.tag,
-    )
 
 
 def _category_validator(ctx: AppContext) -> Callable[[str], str]:

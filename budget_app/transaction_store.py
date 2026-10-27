@@ -36,7 +36,7 @@ from pathlib import Path
 from itertools import chain
 from typing import BinaryIO, Iterable, Iterator
 
-from .durability import SlotUndo
+from .durability import SlotUndo, fsync_dir
 from .models import NotFoundError, StorageError, Transaction
 
 SLOT_SIZE = 16
@@ -104,15 +104,6 @@ def _sorted_keys(ordinals: array[int], ids: array[int]) -> Iterator[DateEntry]:
         start = starts[ordinal]
         for i in range(start, start + counts[ordinal]):
             yield ordinal, placed[i]
-
-
-def _fsync_dir(path: Path) -> None:
-    """폴더의 이름 바꾸기/삭제를 디스크에 확정한다. 안 하면 os.replace 가 꺼진 뒤 되돌아갈 수 있다."""
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
 
 
 def date_ordinal(value: str) -> int:
@@ -325,7 +316,7 @@ class DateIndex:
         os.replace(tmp_path, self.path)
         # 교체를 확정하지 않으면, 이 뒤에 위치 슬롯을 확정한 다음 전원이 꺼졌을 때 교체가 되돌아가
         # 저장된 거래의 날짜 항목이 없어진다(목록·요약에서 빠짐). 쓰기 순서를 지키려면 여기서 확정해야 한다.
-        _fsync_dir(self.path.parent)
+        fsync_dir(self.path.parent)
 
     @staticmethod
     def _write_keys(fp: BinaryIO, keys: Iterable[int]) -> None:
@@ -348,7 +339,7 @@ class DateIndex:
             fp.flush()
             os.fsync(fp.fileno())
         os.replace(tmp_path, self.path)
-        _fsync_dir(self.path.parent)  # merge_keys() 와 같은 이유로 교체를 확정한다
+        fsync_dir(self.path.parent)  # merge_keys() 와 같은 이유로 교체를 확정한다
 
 
 @dataclass(slots=True)
@@ -551,12 +542,12 @@ class TransactionStore:
             fp.flush()
             os.fsync(fp.fileno())
         os.replace(tmp, self.import_journal_path)
-        _fsync_dir(self.data_dir)  # 기록이 확정된 뒤에 슬롯을 써야 꺼져도 되돌릴 근거가 남는다
+        fsync_dir(self.data_dir)  # 기록이 확정된 뒤에 슬롯을 써야 꺼져도 되돌릴 근거가 남는다
 
     def _commit_import(self) -> None:
         """기록을 지워 import 를 완료한다(이 순간 이후로는 되돌리지 않는다)."""
         self.import_journal_path.unlink()
-        _fsync_dir(self.data_dir)
+        fsync_dir(self.data_dir)
 
     def _recover_interrupted_import(self) -> None:
         """끝나지 않은 import 가 쓴 슬롯을 기록된 크기로 잘라 그 import 전체를 취소한다.
@@ -575,7 +566,7 @@ class TransactionStore:
                 fp.flush()
                 os.fsync(fp.fileno())
         self.import_journal_path.unlink()
-        _fsync_dir(self.data_dir)
+        fsync_dir(self.data_dir)
         self.recovered.append("지난 import 가 끝나지 않아 그 import 전체를 취소했습니다. 같은 CSV 를 다시 가져오세요.")
 
     def update_transaction(self, tx: Transaction) -> Transaction:
@@ -734,7 +725,7 @@ class TransactionStore:
         with backup_tmp.open("rb") as fp:
             os.fsync(fp.fileno())
         os.replace(backup_tmp, self.compact_backup_path)
-        _fsync_dir(self.data_dir)
+        fsync_dir(self.data_dir)
         with self.idx_path.open("r+b") as idx, self.log_path.open("rb") as src, tmp_path.open(
             "wb"
         ) as dst:
@@ -759,9 +750,9 @@ class TransactionStore:
             idx.flush()
             os.fsync(idx.fileno())
         os.replace(tmp_path, self.log_path)  # 이 순간이 완료. 이후로는 새 로그와 새 위치 인덱스가 짝이다
-        _fsync_dir(self.data_dir)  # 교체를 확정한 뒤에 복사본을 지워야, 꺼져도 옛 로그+새 인덱스가 되지 않는다
+        fsync_dir(self.data_dir)  # 교체를 확정한 뒤에 복사본을 지워야, 꺼져도 옛 로그+새 인덱스가 되지 않는다
         self.compact_backup_path.unlink()
-        _fsync_dir(self.data_dir)
+        fsync_dir(self.data_dir)
         self.rebuild_date_index()  # 삭제/옛 날짜 항목을 정리하고 새 로그 기준으로 다시 만든다
         return before
 
@@ -783,6 +774,6 @@ class TransactionStore:
             else:
                 self.compact_backup_path.unlink()
                 self.recovered.append("지난 compact 의 마무리(복사본 정리)를 끝냈습니다.")
-            _fsync_dir(self.data_dir)
+            fsync_dir(self.data_dir)
         elif self.compact_tmp_log_path.exists():  # 복사본 없이 남은 임시 로그는 쓰이지 않은 찌꺼기다
             self.compact_tmp_log_path.unlink()

@@ -5,11 +5,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from ..console import build_criteria
 from ..context import AppContext
 from ..decorators import EXIT_OK, command
 from ..formatter import format_amount, format_table
 from ..models import ValidationError
-from .transaction import build_criteria
 
 
 @command

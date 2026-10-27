@@ -1,15 +1,16 @@
-"""커맨드 핸들러가 공유하는 콘솔 입출력 보조 함수(오류 출력, id 파싱, 재입력 루프, 표 출력)."""
+"""커맨드 핸들러가 공유하는 보조 함수(오류 출력, id 파싱, 재입력 루프, 검색 조건 만들기, 표 출력)."""
 
 from __future__ import annotations
 
+import argparse
 import sys
 from typing import Callable, Iterable, TypeVar
 
 from .context import AppContext
 from .formatter import format_amount, format_bar, format_table
 from .models import TYPE_INCOME, Transaction, ValidationError
-from .services import BudgetUsage
-from .validators import format_tags
+from .services import BudgetUsage, SearchCriteria
+from .validators import format_tags, validate_date, validate_month, validate_type
 
 T = TypeVar("T")
 
@@ -48,6 +49,29 @@ def parse_tx_id(value: str) -> int:
 def parse_rule_id(value: str) -> int:
     """`RC-2` 또는 `2` 형태의 반복 규칙 id 를 정수로 바꾼다."""
     return _parse_prefixed_id(value, "RC", "반복 규칙")
+
+
+def build_criteria(ctx: AppContext, args: argparse.Namespace) -> SearchCriteria:
+    """search/export 공통 필터 옵션을 검증해 SearchCriteria 로 만든다."""
+    date_from = validate_date(args.date_from) if args.date_from else None
+    date_to = validate_date(args.date_to) if args.date_to else None
+    month = validate_month(args.month) if args.month else None
+    if date_from and date_to and date_from > date_to:
+        raise ValidationError(
+            f"기간이 뒤집혔습니다: --from {date_from} > --to {date_to}",
+            "--from 에는 더 이른 날짜를 지정하세요.",
+        )
+    category = ctx.categories.validate(args.category) if args.category else None
+    type_ = validate_type(args.type) if args.type else None
+    return SearchCriteria(
+        date_from=date_from,
+        date_to=date_to,
+        month=month,
+        category=category,
+        type=type_,
+        query=args.query,
+        tag=args.tag,
+    )
 
 
 def prompt_until_valid(

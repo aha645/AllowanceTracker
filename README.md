@@ -904,7 +904,7 @@ transactions.jsonl
 
 ### 코드 구성
 
-명령은 `cli` → `commands/` → `services` → `transaction_store`·`stores` 방향으로만 호출합니다. 아래 계층은 위 계층을 모릅니다. 저장소(Store)는 `AppContext.create` 에서 한 번만 만들어 서비스들이 나눠 쓰고, 커맨드는 서비스만 거쳐 데이터를 다룹니다(저장소에 직접 닿지 않음).
+명령은 `cli` → `commands/` → `services`·`file_services` → `transaction_store`·`stores` 방향으로만 호출합니다. 아래 계층은 위 계층을 모릅니다. 저장소(Store)는 `AppContext.create` 에서 한 번만 만들어 서비스들이 나눠 쓰고, 커맨드는 서비스만 거쳐 데이터를 다룹니다(저장소에 직접 닿지 않음). `models`·`validators`·`formatter`·`console`·`decorators` 는 여러 계층이 같이 쓰는 공통 도구이고, `durability` 는 `transaction_store`·`stores` 가 같이 쓰는 저장 보조 도구입니다.
 
 | 데이터 | 저장소 (파일 읽기·쓰기) | 서비스 (규칙) |
 |---|---|---|
@@ -912,18 +912,20 @@ transactions.jsonl
 | 카테고리 | `CategoryStore` (`stores.py`) | `CategoryService` |
 | 예산 | `BudgetStore` (`stores.py`) | `BudgetService` |
 | 반복 규칙 | `RecurringStore` (`stores.py`) | `RecurringService` |
+| CSV 가져오기·내보내기 | 없음. `TransactionService` 를 거쳐 저장·조회 | `CsvService` (`file_services.py`) |
+| 백업 | 없음. `data/` 폴더의 파일을 그대로 복사 | `BackupService` (`file_services.py`) |
 
 | 모듈 | 역할 | 주요 클래스·함수 |
 |---|---|---|
 | `__main__.py` · `cli.py` | `python -m budget_app` 진입점, argparse 서브커맨드 정의, 사용법 오류도 `[오류]`/`[힌트]` 로 출력 | `main`, `build_parser`, `HintArgumentParser` |
 | `commands/` | 서브커맨드 핸들러. 입력을 받아 서비스를 부르고 결과를 출력. 파일 이름이 명령 이름: `transaction`(add·list·search·update·delete) · `summary` · `budget` · `category` · `recurring` · `files`(import·export·compact·backup) | `cmd_add`, `cmd_list`, `cmd_summary` … (모두 `@command`) |
 | `context.py` | 저장소를 한 번만 만들어 서비스들에 나눠 주고(조립), 시작 시 복구를 실행한 뒤 핸들러에는 서비스만 넘김 | `AppContext.create` |
-| `console.py` | 핸들러 공용 입출력: 오류 출력, id 해석, 올바른 값이 나올 때까지 다시 묻기 | `print_error`, `parse_tx_id`, `prompt_until_valid` |
-| `services.py` | 규칙: 거래 추가·수정·삭제·검색·월별 요약·compact, 카테고리 등록·삭제(사용 중이면 거부)·검증·사용 건수, 예산 사용률, 반복 거래 적용 | `TransactionService`, `CategoryService`, `BudgetService`, `RecurringService` |
+| `console.py` | 핸들러 공용 보조: 오류 출력, id 해석, 올바른 값이 나올 때까지 다시 묻기, search·export 검색 조건 만들기, 거래 표·예산 사용률 출력 | `print_error`, `parse_tx_id`, `prompt_until_valid`, `build_criteria`, `render_transactions` |
+| `services.py` | 규칙: 거래 추가·수정·삭제·검색·월별 요약·compact, 카테고리 등록·삭제(사용 중이면 거부)·검증·사용 건수, 예산 설정·조회·삭제와 사용률, 반복 거래 등록·적용 | `TransactionService`, `CategoryService`, `BudgetService`, `RecurringService` |
 | `file_services.py` | CSV 가져오기·내보내기, 백업 | `CsvService`, `BackupService` |
 | `validators.py` | 날짜·월·타입·금액·일자·태그 검증과 정규화 | `validate_date`, `validate_amount` … |
 | `transaction_store.py` | 거래 저장 엔진: `transactions.jsonl` · `.idx` · `.date.idx` 읽기·쓰기, 시작 시 복구, `compact` | `TransactionStore`, `TransactionIndex`, `DateIndex` |
-| `durability.py` | 파일을 꺼져도 안전한 순서로 확정(`fsync`, 임시 파일 교체), 위치 칸 되돌리기 기록 | `atomic_write`, `SlotUndo` |
+| `durability.py` | 파일을 꺼져도 안전한 순서로 확정(`fsync`, 임시 파일 교체), 위치 칸 되돌리기 기록 | `fsync_dir`, `atomic_write`, `SlotUndo` |
 | `stores.py` | 카테고리·예산·반복 규칙 JSONL (임시 파일 + `os.replace` 로 전체 재작성) | `CategoryStore`, `BudgetStore`, `RecurringStore` |
 | `models.py` | 데이터 모델과 예외(원인 `message` + 힌트 `hint`) | `Transaction`, `ValidationError`, `StorageError` |
 | `formatter.py` | 외부 라이브러리 없이 한글 폭을 계산해 표 정렬, 금액·예산 막대 형식 | `format_table`, `display_width`, `format_amount`, `format_bar` |

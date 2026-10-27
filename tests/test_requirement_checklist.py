@@ -762,7 +762,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
 
         # 로그 교체는 끝나고 복사본을 지우기 전에 꺼지면, 이미 짝이 맞으므로 복사본만 지운다
         calls: list[int] = []
-        real_fsync_dir = transaction_store._fsync_dir
+        real_fsync_dir = transaction_store.fsync_dir
 
         def stop_after_log_replace(path):  # type: ignore[no-untyped-def]
             calls.append(1)
@@ -770,7 +770,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
                 raise KeyboardInterrupt
             return real_fsync_dir(path)
 
-        with mock.patch("budget_app.transaction_store._fsync_dir", side_effect=stop_after_log_replace):
+        with mock.patch("budget_app.transaction_store.fsync_dir", side_effect=stop_after_log_replace):
             self.assertEqual(self.run_cli("compact")[0], 130)
         self.assertTrue((self.data_dir / "transactions.idx.compact-backup").exists())
         code, out, _ = self.run_cli("list", "--all")
