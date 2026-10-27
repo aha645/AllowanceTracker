@@ -973,7 +973,7 @@ $ od -t u8 data/transactions.idx
 0000120
 ```
 
-`transactions.date.idx` — 항목마다 날짜 번호(4바이트)와 id(8바이트)를 읽어 `날짜,id` 로 출력하고, `IFS=,`(IFS = Internal Field Separator, 셸이 값을 나누는 구분자)로 두 값을 나눠 읽습니다. 날짜 번호는 파이썬 `date.toordinal()` 값이라, 1970-01-01 의 번호인 `719163` 을 빼고 하루 86400초를 곱해 `date` 로 바꿉니다. `-u`(UTC(Coordinated Universal Time, 협정 세계시) 기준) 를 빼면 UTC 보다 늦은 시간대(미국 등)에서 날짜가 하루 앞당겨 나옵니다. `date -r` 은 macOS 문법이고, 리눅스에서는 `date -u -d "@$(( ... ))"` 로 바꿉니다.
+`transactions.date.idx` — 항목마다 날짜 번호(4바이트)와 id(8바이트)를 읽어 `날짜,id` 로 출력하고, `IFS=,`(IFS = Internal Field Separator, 셸이 값을 나누는 구분자)로 두 값을 나눠 읽습니다. 날짜 번호는 파이썬 `date.toordinal()` 값이라, 1970-01-01 의 번호인 `719163` 을 빼고 하루 86400초를 곱해 `date` 로 바꿉니다. `-u` 는 UTC(Coordinated Universal Time, 협정 세계시) 기준으로 계산하라는 옵션입니다. 빼면 UTC 보다 늦은 시간대(미국 등)에서 날짜가 하루 앞당겨 나옵니다. `date -r` 은 macOS 문법이고, 리눅스에서는 `date -u -d "@$(( ... ))"` 로 바꿉니다.
 
 ```text
 $ hexdump -v -e '1/4 "%u," 1/8 "%u\n"' data/transactions.date.idx | while IFS=, read -r val1 val2; do
