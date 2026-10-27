@@ -89,7 +89,6 @@ def _prompt_transaction(ctx: AppContext) -> Transaction:
 @command
 def cmd_add(ctx: AppContext, args: argparse.Namespace) -> int:
     """거래 추가. 옵션이 하나도 없으면 대화형으로 입력받는다."""
-    ctx.categories.ensure_registered()
     option_values = (args.date, args.type, args.category, args.amount, args.memo, args.tags)
     if any(v is not None for v in option_values):
         missing = [
@@ -116,6 +115,9 @@ def cmd_add(ctx: AppContext, args: argparse.Namespace) -> int:
             tags=args.tags or "",
         )
     else:
+        # 대화형은 build_transaction 을 거치지 않으므로, 날짜부터 묻기 전에 여기서 카테고리 유무를 확인한다.
+        # 옵션 방식은 build_transaction 안에서 한 번 확인하므로 여기서 또 하지 않는다.
+        ctx.categories.ensure_registered()
         tx = _prompt_transaction(ctx)
     saved = ctx.transactions.add(tx)
     print(f"[저장 완료] id={saved.display_id}")
