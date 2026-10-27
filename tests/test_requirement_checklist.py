@@ -521,6 +521,16 @@ class RequirementChecklistTestCase(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertIn("[오류]", err)
 
+        # id 는 숫자로만: int() 가 받던 TX-1_0(→ TX-10)·TX-+3 같은 표기로 다른 거래를 지우거나 고치지 않는다
+        listed = self._listed_ids()
+        for command in ("delete", "update"):
+            for target in ("TX-1_0", "TX-+3", "TX-1 0"):
+                with self.subTest(command=command, target=target):
+                    code, _, err = self.run_cli(command, "--id", target, *(["--yes"] if command == "delete" else []))
+                    self.assertEqual(code, 1)
+                    self.assertIn(f"거래 id 형식이 올바르지 않습니다: '{target}'", err)
+        self.assertEqual(self._listed_ids(), listed)
+
     def test_090_import(self) -> None:
         source = self.data_dir / "import.csv"
         source.write_text(
@@ -873,6 +883,9 @@ class RequirementChecklistTestCase(unittest.TestCase):
         # 뒤 테스트(150)는 2024-03-01 거래가 가장 최신이라고 가정하므로 이 달 거래는 지운다
         self.assertEqual(self.run_cli("delete", "--id", april_ids()[0], "--yes")[0], 0)
 
+        code, _, err = self.run_cli("recurring", "remove", "--id", "RC-+" + self._id("rule")[3:])  # 부호 불가
+        self.assertEqual(code, 1)
+        self.assertIn("반복 규칙 id 형식이 올바르지 않습니다", err)
         self.assertEqual(self.run_cli("recurring", "remove", "--id", self._id("rule"))[0], 0)
         self.assertNotIn(self._id("rule"), self.run_cli("recurring", "list")[1])
 

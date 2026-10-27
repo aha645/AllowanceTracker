@@ -25,17 +25,19 @@ def print_error(message: str, hint: str = "") -> None:
 
 
 def _parse_prefixed_id(value: str, prefix: str, label: str) -> int:
-    """`<prefix>-N` 또는 `N` 형태의 id 문자열을 정수로 바꾼다."""
+    """`<prefix>-N` 또는 `N` 형태의 id 문자열을 정수로 바꾼다. N 은 숫자로만(부호·밑줄 불가).
+
+    int() 는 `1_0`·`+3` 도 받아서, `delete --id TX-1_0 --yes` 가 오타 대신 TX-10 을 지웠다.
+    """
     text = str(value).strip().upper()
     if text.startswith(f"{prefix}-"):
         text = text[len(prefix) + 1:]
-    try:
-        return int(text)
-    except ValueError as exc:
+    if not text.isdecimal():
         raise ValidationError(
             f"{label} id 형식이 올바르지 않습니다: '{value}'",
             f"예: --id {prefix}-3 또는 --id 3",
-        ) from exc
+        )
+    return int(text)
 
 
 def parse_tx_id(value: str) -> int:
