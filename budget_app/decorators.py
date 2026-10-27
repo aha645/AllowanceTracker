@@ -76,6 +76,15 @@ def handle_errors(func: F) -> F:
             print()
             print("[중단] 사용자가 입력을 취소했습니다.", file=sys.stderr)
             return EXIT_INTERRUPTED
+        except Exception as exc:  # 안전망: 예상하지 못한 오류도 스택트레이스 대신 [오류]/[힌트] 로 보인다
+            logger.debug("%s 처리 중 예기치 못한 오류", func.__name__, exc_info=True)
+            print(f"[오류] 예기치 못한 오류가 발생했습니다: {type(exc).__name__}: {exc}", file=sys.stderr)
+            print(
+                "[힌트] --verbose 로 다시 실행하면 자세한 내용(스택트레이스)을 볼 수 있습니다. "
+                "저장 파일을 직접 고쳤다면 backup 으로 만든 백업본과 비교해 보세요.",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
         return EXIT_OK if result is None else int(result)
 
     return wrapper  # type: ignore[return-value]

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import csv
+import io
 import os
 import random
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
@@ -314,6 +316,41 @@ repo.update_transaction(repo.get_transaction(2).replace_fields(date="2023-01-01"
         self.assertEqual(proc.returncode, 1)
         self.assertIn("[오류] 거래 슬롯 복구 기록이 손상되었습니다.", proc.stderr)
         self.assertNotIn("Traceback", proc.stderr)
+
+    def test_malformed_rows_and_unexpected_errors_show_error_not_traceback(self) -> None:
+        # JSON 문법은 맞지만 키가 없거나 값의 형식이 틀린 줄: 줄 번호와 함께 [오류] 로 멈추고 스택트레이스는 없다
+        ctx = AppContext.create(self.folder)
+        ctx.categories.add("식비")
+        good = {name: (self.folder / name).read_text(encoding="utf-8")
+                for name in ("categories.jsonl", "budgets.jsonl", "recurring.jsonl")}
+        cases = [
+            ("categories.jsonl", '{"created_at": "x"}', ["category", "list"], "categories.jsonl 2번째 줄"),
+            ("categories.jsonl", '{"name": "교통", "count": "많음"}', ["category", "list"], "categories.jsonl 2번째 줄"),
+            ("budgets.jsonl", '{"month": "2024-01"}', ["budget", "list"], "budgets.jsonl 1번째 줄"),
+            ("recurring.jsonl", '{"id": 1, "day": "x"}', ["recurring", "list"], "recurring.jsonl 1번째 줄"),
+            ("recurring.jsonl", '{"id": "a"}', ["recurring", "add", "--day", "1", "--type", "income",
+                                                "--category", "식비", "--amount", "1"], "recurring.jsonl 1번째 줄"),
+            ("recurring.jsonl", "5", ["recurring", "list"], "recurring.jsonl 1번째 줄"),
+        ]
+        for name, line, argv, where in cases:
+            (self.folder / name).write_text(good[name] + line + "\n", encoding="utf-8")
+            proc = subprocess.run([sys.executable, "-m", "budget_app", "--data-dir", str(self.folder), *argv],
+                                  cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 1, line)
+            self.assertIn(f"[오류] {where}의 형식이 올바르지 않습니다", proc.stderr)
+            self.assertNotIn("Traceback", proc.stderr)
+            (self.folder / name).write_text(good[name], encoding="utf-8")
+
+        # 그 밖의 예상하지 못한 오류도 [오류]/[힌트] 와 종료 코드 1 (스택트레이스는 --verbose 일 때만)
+        from budget_app.cli import main
+        err = io.StringIO()
+        with mock.patch("budget_app.services.TransactionService.iter_latest", side_effect=RuntimeError("고장")), \
+                redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = main(["--data-dir", str(self.folder), "list"])
+        self.assertEqual(code, 1)
+        self.assertIn("[오류] 예기치 못한 오류가 발생했습니다: RuntimeError: 고장", err.getvalue())
+        self.assertIn("--verbose", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
 
     def test_slot_journal_with_wrong_hash_fails_closed(self) -> None:
         # 길이(72바이트)·형식 표시·범위는 맞고 원래 슬롯 1바이트만 바뀐 기록은 SHA-256 검사로만 걸러진다

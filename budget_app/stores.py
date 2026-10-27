@@ -10,7 +10,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping, TypeVar
 
 from .models import (
     Budget,
@@ -22,6 +22,8 @@ from .models import (
     ValidationError,
 )
 from .durability import fsync_dir
+
+T = TypeVar("T")
 
 
 class JsonlStore:
@@ -35,7 +37,8 @@ class JsonlStore:
         if not self.path.exists():
             self.path.touch()
 
-    def _iter_raw(self) -> Iterator[dict[str, Any]]:
+    def _iter_numbered(self) -> Iterator[tuple[int, dict[str, Any]]]:
+        """(줄 번호, JSON 객체) 를 하나씩 낸다. JSON 이 아니거나 객체({...})가 아닌 줄은 StorageError."""
         if not self.path.exists():
             return
         with self.path.open("r", encoding="utf-8") as fp:
@@ -44,12 +47,38 @@ class JsonlStore:
                 if not line:
                     continue
                 try:
-                    yield json.loads(line)
+                    row = json.loads(line)
                 except json.JSONDecodeError as exc:
                     raise StorageError(
                         f"{self.path.name} {lineno}번째 줄을 읽을 수 없습니다: {exc}",
                         "해당 줄을 수정하거나 backup 명령으로 만든 백업본에서 복구하세요.",
                     ) from exc
+                if not isinstance(row, dict):
+                    raise self._malformed(lineno, f"JSON 객체가 아닙니다: {line[:40]}")
+                yield lineno, row
+
+    def _iter_raw(self) -> Iterator[dict[str, Any]]:
+        for _, row in self._iter_numbered():
+            yield row
+
+    def _iter_parsed(self, factory: Callable[[dict[str, Any]], T]) -> Iterator[T]:
+        """줄마다 factory 로 객체를 만든다. 키가 없거나 값의 형식이 틀리면 줄 번호와 함께 StorageError.
+
+        JSON 문법은 맞아도 직접 편집 등으로 키가 빠지거나(`KeyError`) 숫자 자리에 글자가 들어가면(`ValueError`)
+        예전에는 스택트레이스가 그대로 보였다.
+        """
+        for lineno, row in self._iter_numbered():
+            try:
+                item = factory(row)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise self._malformed(lineno, f"{type(exc).__name__}: {exc}") from exc
+            yield item
+
+    def _malformed(self, lineno: int, detail: str) -> StorageError:
+        return StorageError(
+            f"{self.path.name} {lineno}번째 줄의 형식이 올바르지 않습니다({detail}).",
+            "해당 줄을 수정하거나 backup 명령으로 만든 백업본에서 복구하세요.",
+        )
 
     def _rewrite(self, rows: list[dict[str, Any]]) -> None:
         """임시 파일에 전부 쓰고 os.replace 로 원자적 교체."""
@@ -77,7 +106,7 @@ class CategoryStore(JsonlStore):
 
     def list_all(self) -> list[Category]:
         """등록 순서대로 카테고리를 돌려준다."""
-        return [Category.from_dict(row) for row in self._iter_raw()]
+        return list(self._iter_parsed(Category.from_dict))
 
     def names(self) -> list[str]:
         return [c.name for c in self.list_all()]
@@ -162,7 +191,7 @@ class BudgetStore(JsonlStore):
 
     def list_all(self) -> list[Budget]:
         """월 오름차순으로 예산을 돌려준다."""
-        budgets = [Budget.from_dict(row) for row in self._iter_raw()]
+        budgets = list(self._iter_parsed(Budget.from_dict))
         return sorted(budgets, key=lambda b: b.month)
 
     def get(self, month: str) -> Budget | None:
@@ -205,12 +234,16 @@ class RecurringStore(JsonlStore):
     def __init__(self, data_dir: Path) -> None:
         super().__init__(Path(data_dir) / self.FILE_NAME)
 
+    def _rows(self) -> list[tuple[dict[str, Any], RecurringRule]]:
+        """(원본 줄, 해석한 규칙) 목록. 삭제 표시한 줄도 포함한다(번호를 피하고 다시 쓸 때 그대로 남기려고)."""
+        return list(self._iter_parsed(lambda row: (row, RecurringRule.from_dict(row))))
+
     def list_all(self) -> list[RecurringRule]:
-        rules = [RecurringRule.from_dict(row) for row in self._iter_raw() if not row.get("removed")]
+        rules = [rule for row, rule in self._rows() if not row.get("removed")]
         return sorted(rules, key=lambda r: r.id)
 
-    def _live_row(self, rows: list[dict[str, Any]], rule_id: int) -> dict[str, Any]:
-        row = next((r for r in rows if int(r["id"]) == rule_id and not r.get("removed")), None)
+    def _live_row(self, rows: list[tuple[dict[str, Any], RecurringRule]], rule_id: int) -> dict[str, Any]:
+        row = next((row for row, rule in rows if rule.id == rule_id and not row.get("removed")), None)
         if row is None:
             raise NotFoundError(
                 f"RC-{rule_id} 반복 규칙을 찾을 수 없습니다.",
@@ -228,8 +261,8 @@ class RecurringStore(JsonlStore):
         return rule
 
     def add(self, rule: RecurringRule) -> RecurringRule:
-        rows = list(self._iter_raw())
-        new_id = max((int(r["id"]) for r in rows), default=0) + 1  # 삭제 표시한 규칙의 번호도 피한다
+        rows = self._rows()
+        new_id = max((r.id for _, r in rows), default=0) + 1  # 삭제 표시한 규칙의 번호도 피한다
         stored = RecurringRule(
             id=new_id,
             day=rule.day,
@@ -240,22 +273,21 @@ class RecurringStore(JsonlStore):
             tags=list(rule.tags),
             applied_months=[],
         )
-        rows.append(stored.to_dict())
-        self._rewrite(rows)
+        self._rewrite([row for row, _ in rows] + [stored.to_dict()])
         return stored
 
     def save(self, rule: RecurringRule) -> RecurringRule:
         """기존 규칙을 통째로 교체 저장한다."""
-        rows = list(self._iter_raw())
+        rows = self._rows()
         target = self._live_row(rows, rule.id)
         target.clear()
         target.update(rule.to_dict())
-        self._rewrite(rows)
+        self._rewrite([row for row, _ in rows])
         return rule
 
     def remove(self, rule_id: int) -> RecurringRule:
-        rows = list(self._iter_raw())
+        rows = self._rows()
         target = self._live_row(rows, rule_id)
         target["removed"] = True  # 번호를 다시 쓰지 않도록 줄은 남긴다(클래스 설명)
-        self._rewrite(rows)
+        self._rewrite([row for row, _ in rows])
         return RecurringRule.from_dict(target)

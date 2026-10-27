@@ -639,6 +639,9 @@ class RequirementChecklistTestCase(unittest.TestCase):
             self.assertEqual(code, 1, out)
             self.assertIn("데이터 폴더 안에는 내보낼 수 없습니다", err)
             self.assertFalse(out.exists() and not out.samefile(store), out)
+        code, _, err = self.run_cli("export", "--out", str(self.data_dir), "--month", "2024-01")  # 데이터 폴더 자체
+        self.assertEqual(code, 1)
+        self.assertIn("데이터 폴더 안에는 내보낼 수 없습니다", err)
         self.assertEqual(store.read_bytes(), before)
         self.assertEqual(self.run_cli("list")[0], 0)
 

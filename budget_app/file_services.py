@@ -123,9 +123,9 @@ class CsvService:
         """
         if not self.data_dir.exists():
             return False
-        return any(
-            folder.exists() and folder.samefile(self.data_dir) for folder in target.absolute().parents
-        )
+        target = target.absolute()
+        # target 자신도 본다: `--out data` 처럼 데이터 폴더 자체를 주면 "입출력 오류" 로 엉뚱하게 실패했다
+        return any(folder.exists() and folder.samefile(self.data_dir) for folder in (target, *target.parents))
 
     def export_csv(self, path: Path, transactions: Iterable[Transaction]) -> int:
         """거래를 CSV 로 내보내고 건수를 돌려준다."""
