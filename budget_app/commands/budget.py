@@ -25,14 +25,16 @@ def cmd_budget_set(ctx: AppContext, args: argparse.Namespace) -> int:
 def cmd_budget_show(ctx: AppContext, args: argparse.Namespace) -> int:
     """특정 달 예산과 사용률 조회."""
     budget = ctx.budgets.get(args.month)  # 월 형식은 서비스가 검증한다
-    month = args.month.strip()  # 검증을 통과했다면 앞뒤 공백만 뺀 값이 정규화된 월이다(validate_month)
     if budget is None:
+        month = args.month.strip()  # 안내 문구용. 검증을 통과했다면 앞뒤 공백만 뺀 값이 정규화된 월이다
         print(f"[안내] {month} 예산이 설정되지 않았습니다.")
         print(f"[힌트] budget set --month {month} --amount <금액>")
         return EXIT_OK
-    spent = ctx.transactions.summarize_month(month, top=0).total_expense
-    print(f"[{month} 예산] {format_amount(budget.amount)}원")
-    print_budget_usage(BudgetUsage(month, budget.amount, spent))
+    # 집계에는 저장된 예산의 월(저장할 때 정규화됨)을 쓴다. summarize_month 는 월을 검증하지 않아서,
+    # 입력값을 그대로 넘기면 validate_month 가 다른 형식도 받도록 바뀔 때 엉뚱한 기간을 집계할 수 있다.
+    spent = ctx.transactions.summarize_month(budget.month, top=0).total_expense
+    print(f"[{budget.month} 예산] {format_amount(budget.amount)}원")
+    print_budget_usage(BudgetUsage(budget.month, budget.amount, spent))
     return EXIT_OK
 
 
