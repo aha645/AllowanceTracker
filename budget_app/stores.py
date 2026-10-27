@@ -125,7 +125,7 @@ class CategoryStore(JsonlStore):
                 "카테고리 이름이 비어 있습니다.",
                 '예: python -m budget_app category add --name "식비"',
             )
-        if clean.isdigit():  # 대화형 입력은 숫자를 번호로 먼저 읽어서, 이름 "3" 을 고를 수 없다
+        if clean.isdecimal():  # 대화형 입력은 숫자를 번호로 먼저 읽어서, 이름 "3" 을 고를 수 없다
             raise ValidationError(
                 f"카테고리 이름은 숫자로만 지을 수 없습니다: '{clean}'",
                 "대화형 입력의 번호와 헷갈립니다. 글자를 섞어 주세요. 예: 3월적금",

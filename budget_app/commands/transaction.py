@@ -42,7 +42,8 @@ def _category_validator(ctx: AppContext) -> Callable[[str], str]:
 
     def validator(raw: str) -> str:
         text = raw.strip()
-        if text.isdigit() and 1 <= int(text) <= len(names):
+        # isdigit 은 '²' 같은 문자도 True 라 int() 에서 멈췄다. isdecimal 은 int() 가 항상 읽는다
+        if text.isdecimal() and 1 <= int(text) <= len(names):
             return names[int(text) - 1]
         return ctx.categories.validate(text)
 

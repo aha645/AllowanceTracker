@@ -30,7 +30,7 @@ data/
 ### 테스트 실행
 
 ```bash
-python -m unittest discover -s tests -v    # 요구사항 17개 + 저장소 복구·10만 건 19개
+python -m unittest discover -s tests -v    # 요구사항 17개 + 저장소 복구·10만 건 20개
 
 # 090(import) 까지만: 000 부터 그 번호까지 함께 지정 (-k 는 이름에 그 글자가 든 테스트를 고름)
 python -m unittest tests.test_requirement_checklist -v -k 000 -k 010 -k 020 -k 030 -k 040 -k 050 -k 060 -k 070 -k 080 -k 090

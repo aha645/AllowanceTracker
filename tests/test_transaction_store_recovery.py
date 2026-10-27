@@ -356,7 +356,7 @@ repo.update_transaction(repo.get_transaction(2).replace_fields(date="2023-01-01"
         # import 진행 기록이 숫자가 아니거나 칸 크기(16)의 배수가 아니면 추측해 자르지 않고 [오류] 로 멈춘다
         self.repo.append_transaction(tx())
         before = self.repo.idx_path.read_bytes()
-        for content in ("garbage", "17"):
+        for content in ("garbage", "17", "²"):  # ² 는 isdigit 은 True 지만 int() 로 못 읽는다
             self.repo.import_journal_path.write_text(content, encoding="utf-8")
             with self.assertRaises(StorageError):
                 self.open_repo()
@@ -365,6 +365,18 @@ repo.update_transaction(repo.get_transaction(2).replace_fields(date="2023-01-01"
                               cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(proc.returncode, 1)
         self.assertIn("[오류] import 진행 기록(transactions.idx.import-pending)이 손상되었습니다", proc.stderr)
+
+    def test_interactive_category_number_rejects_non_decimal_digits(self) -> None:
+        # '²' 는 isdigit() 이 True 라 번호로 읽으려다 int() 에서 add 전체가 멈췄다. 이제 다시 묻는다
+        from budget_app.commands.transaction import _category_validator
+        from budget_app.console import prompt_until_valid
+        ctx = AppContext.create(self.folder)
+        ctx.categories.add("식비")
+        ctx.categories.add("교통")
+        err = io.StringIO()
+        with mock.patch("builtins.input", side_effect=["²", "２"]), redirect_stderr(err):
+            self.assertEqual(prompt_until_valid("카테고리: ", _category_validator(ctx)), "교통")  # 전각 ２ 는 번호
+        self.assertIn("등록되지 않은 카테고리입니다: '²'", err.getvalue())
 
     def test_line_breaks_in_memo_tags_and_category_become_spaces(self) -> None:
         # 줄바꿈·탭이 그대로 저장되면 목록 표의 한 행이 여러 줄로 나뉜다. 옵션·CSV·수정·반복 규칙 모두 공백으로 바꾼다
