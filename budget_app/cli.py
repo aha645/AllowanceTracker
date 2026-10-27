@@ -29,6 +29,7 @@ from .console import print_error
 from .context import AppContext
 from .decorators import EXIT_ERROR, EXIT_OK, configure_logging, handle_errors
 from .models import TRANSACTION_TYPES
+from .validators import parse_int
 
 DEFAULT_DATA_DIR = Path("./data")
 DEFAULT_LIST_LIMIT = 20
@@ -38,7 +39,7 @@ DEFAULT_TOP = 3
 def _positive_int(value: str) -> int:
     """--limit/--top 은 1 이상만 받는다. 0·음수는 아무것도 출력하지 않거나 명령마다 다르게 동작했다."""
     try:
-        number = int(value)
+        number = parse_int(value)  # 1_0 같은 밑줄 표기는 받지 않는다(validators.parse_int)
     except ValueError:
         number = 0
     if number < 1:

@@ -14,6 +14,17 @@ from .models import DATE_FORMAT, MONTH_FORMAT, TRANSACTION_TYPES, ValidationErro
 _LINE_BREAKS = re.compile(r"[\r\n\t\v\f\x85\u2028\u2029]+")
 # 쉼표는 천 단위(세 자리마다)로 찍은 것만 받는다. 1,2,3 이나 600,00 같은 오타가 다른 금액으로 저장되지 않게 한다.
 _GROUPED_AMOUNT = re.compile(r"[+-]?\d{1,3}(?:,\d{3})+")
+# 부호와 숫자만. int() 는 1_000 같은 밑줄 표기도 받아 "1_2" 가 12 로 저장됐다(쉼표 오타를 막는 것과 맞지 않음).
+# \d 는 전각 숫자(１２)도 포함한다(한글 입력기에서 들어올 수 있고 int() 가 읽는다).
+_PLAIN_INT = re.compile(r"[+-]?\d+")
+
+
+def parse_int(text: str) -> int:
+    """앞뒤 공백을 뺀 문자열이 부호와 숫자로만 돼 있으면 정수로, 아니면 ValueError."""
+    text = text.strip()
+    if not _PLAIN_INT.fullmatch(text):
+        raise ValueError(f"정수가 아닙니다: {text!r}")
+    return int(text)
 
 
 def validate_date(value: str) -> str:
@@ -76,7 +87,7 @@ def validate_amount(value: str | int) -> int:
             )
         text = text.replace(",", "")
     try:
-        amount = int(text)
+        amount = parse_int(text)
     except ValueError as exc:
         raise ValidationError(
             f"금액은 정수여야 합니다: '{value}'",
@@ -94,7 +105,7 @@ def validate_day(value: str | int) -> int:
     """반복 규칙용 일자(1~31)."""
     text = str(value).strip()
     try:
-        day = int(text)
+        day = parse_int(text)
     except ValueError as exc:
         raise ValidationError(
             f"일자는 정수여야 합니다: '{value}'", "1~31 사이의 숫자를 입력하세요."

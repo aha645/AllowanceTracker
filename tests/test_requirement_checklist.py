@@ -304,6 +304,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
                                    "금액의 쉼표 위치가 올바르지 않습니다: '1,2,3'"),
             "쉼표 뒤 자릿수 부족": (("2024-01-01", "expense", "식비", "600,00"),
                               "금액의 쉼표 위치가 올바르지 않습니다: '600,00'"),
+            "밑줄이 든 금액": (("2024-01-01", "expense", "식비", "1_2"), "금액은 정수여야 합니다: '1_2'"),
             "허용되지 않은 type": (("2024-01-01", "transfer", "식비", "1000"), None),
             "미등록 카테고리": (("2024-01-01", "expense", "없는카테고리", "1000"), "등록되지 않은 카테고리입니다"),
         }
@@ -356,7 +357,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
 
         # --limit·--top 은 1 이상만: 0·음수는 아무것도 출력하지 않거나 search 만 1건을 내던 문제
         for args in (["list", "--limit", "0"], ["search", "--type", "expense", "--limit", "-1"],
-                     ["summary", "--month", "2024-01", "--top", "0"]):
+                     ["summary", "--month", "2024-01", "--top", "0"], ["list", "--limit", "1_0"]):
             shown = io.StringIO()  # run_cli 가 콘솔(stdout)에 함께 보여 주는 출력. 종료되면 반환값이 없다
             with self.assertRaises(SystemExit) as raised, redirect_stdout(shown):
                 self.run_cli(*args)
@@ -877,6 +878,10 @@ class RequirementChecklistTestCase(unittest.TestCase):
 
         # 지운 규칙의 번호는 다시 쓰지 않는다. 다시 쓰면 새 규칙이 지운 규칙의 거래(RC-n/2024-02) 때문에
         # 2024-02 에 이미 적용된 것으로 보고 건너뛰었다.
+        code, _, err = self.run_cli("recurring", "add", "--day", "1_0", "--type", "income",  # 밑줄 표기 거부
+                                    "--category", "월급", "--amount", "1")
+        self.assertEqual(code, 1)
+        self.assertIn("일자는 정수여야 합니다: '1_0'", err)
         _, out, _ = self.run_cli("recurring", "add", "--day", "1", "--type", "income",
                                  "--category", "월급", "--amount", "1", "--memo", "새 규칙")
         new_rule = self._group(r"id=(RC-\d+)", out)
