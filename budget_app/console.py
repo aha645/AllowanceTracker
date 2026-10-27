@@ -143,6 +143,6 @@ def maybe_hint_compact(ctx: AppContext) -> None:
     if ctx.transactions.needs_compact():
         stats = ctx.transactions.stats()
         print(
-            f"[안내] 로그의 {stats.orphan_ratio * 100:.0f}% 가 오래된 버전입니다. "
+            f"[안내] 거래 데이터의 {stats.orphan_ratio * 100:.0f}% 가 오래된 버전입니다. "
             "`compact` 명령으로 정리할 수 있습니다."
         )

@@ -348,18 +348,18 @@ class StorageStats:
 
     slot_count: int
     live_count: int
-    log_size: int
+    tr_size: int
     live_size: int
 
     @property
     def orphan_size(self) -> int:
-        return max(self.log_size - self.live_size, 0)
+        return max(self.tr_size - self.live_size, 0)
 
     @property
     def orphan_ratio(self) -> float:
-        if self.log_size <= 0:
+        if self.tr_size <= 0:
             return 0.0
-        return self.orphan_size / self.log_size
+        return self.orphan_size / self.tr_size
 
 
 class TransactionStore:
@@ -698,14 +698,14 @@ class TransactionStore:
                         continue
                     live_count += 1
                     live_size += end - start + 1  # 개행 1바이트 포함
-        log_size = self.tr_path.stat().st_size if self.tr_path.exists() else 0
+        tr_size = self.tr_path.stat().st_size if self.tr_path.exists() else 0
         return StorageStats(
-            slot_count=total, live_count=live_count, log_size=log_size, live_size=live_size
+            slot_count=total, live_count=live_count, tr_size=tr_size, live_size=live_size
         )
 
     def needs_compact(self) -> bool:
         stats = self.stats()
-        return stats.log_size > 0 and stats.orphan_ratio >= self.COMPACT_HINT_RATIO
+        return stats.tr_size > 0 and stats.orphan_ratio >= self.COMPACT_HINT_RATIO
 
     def compact(self) -> StorageStats:
         """살아있는 레코드만 새 거래 데이터 파일로 옮겨 쓰고 원자적으로 교체한다.

@@ -17,7 +17,7 @@
     [응용 기능]
             100  로그·종료 코드 (--verbose, 0/1/130, 스택트레이스 없음)
             110  표 포맷 (구분선, 부호, 천 단위, 예산 막대)
-            120  저장 원자성 (임시파일 교체 실패 시 원본 보존, 로그 append 전용 + 인덱스 제자리 갱신)
+            120  저장 원자성 (임시파일 교체 실패 시 원본 보존, 거래 데이터 append 전용 + 인덱스 제자리 갱신)
             130  백업
             140  반복 내역
             150  날짜 인덱스 (옛 날짜 거래여도 거래일자 최신순, 조기 종료, compact/삭제 후 복구)
@@ -119,12 +119,12 @@ class RequirementChecklistTestCase(unittest.TestCase):
     def _id(self, key: str) -> str:
         """시나리오 거래(a~e)/반복 규칙(rule)의 id. 이번 실행에서 모르면 저장 파일에서 복원한다.
 
-        거래는 삭제돼도 로그(transactions.jsonl)에 기록이 남으므로 삭제된 거래(b)도 찾을 수 있다.
+        거래는 삭제돼도 거래 데이터(transactions.jsonl)에 기록이 남으므로 삭제된 거래(b)도 찾을 수 있다.
         """
         if key not in self.ids and key in self.SCENARIO_KEYS:
             date, category = self.SCENARIO_KEYS[key]
-            log = self.data_dir / "transactions.jsonl"
-            for line in (log.read_text(encoding="utf-8").splitlines() if log.exists() else []):
+            tr = self.data_dir / "transactions.jsonl"
+            for line in (tr.read_text(encoding="utf-8").splitlines() if tr.exists() else []):
                 row = json.loads(line)
                 if (row["date"], row["category"]) == (date, category):
                     self.ids[key] = f"TX-{row['id']}"
@@ -667,24 +667,24 @@ class RequirementChecklistTestCase(unittest.TestCase):
                 self.assertIn("[오류]", err)
                 self.assertEqual(path.read_text(encoding="utf-8"), original)
 
-        # transactions: update 는 로그에 새 버전을 append, 인덱스는 제자리 갱신. delete 는 로그를 건드리지 않음
+        # transactions: update 는 거래 데이터에 새 버전을 append, 인덱스는 제자리 갱신. delete 는 거래 데이터를 건드리지 않음
         self._add("tmp", "2024-04-01", "expense", "식비", "1000", "원자성 테스트")
-        log, idx = self.data_dir / "transactions.jsonl", self.data_dir / "transactions.idx"
+        tr, idx = self.data_dir / "transactions.jsonl", self.data_dir / "transactions.idx"
 
-        def log_lines() -> list[str]:
-            return log.read_text(encoding="utf-8").strip().splitlines()
+        def tr_lines() -> list[str]:
+            return tr.read_text(encoding="utf-8").strip().splitlines()
 
-        lines_before, idx_size = len(log_lines()), idx.stat().st_size
+        lines_before, idx_size = len(tr_lines()), idx.stat().st_size
         with self.fake_input(["", "", "", "2000", "", ""]):  # 금액만 1,000 → 2,000
             self.assertEqual(self.run_cli("update", "--id", self.ids["tmp"])[0], 0)
-        self.assertEqual(len(log_lines()), lines_before + 1)  # 새 버전이 끝에 append, 옛 줄은 보존
-        self.assertIn('"amount": 1000', log_lines()[-2])
-        self.assertIn('"amount": 2000', log_lines()[-1])
+        self.assertEqual(len(tr_lines()), lines_before + 1)  # 새 버전이 끝에 append, 옛 줄은 보존
+        self.assertIn('"amount": 1000', tr_lines()[-2])
+        self.assertIn('"amount": 2000', tr_lines()[-1])
         self.assertEqual(idx.stat().st_size, idx_size)  # 슬롯 수는 그대로(제자리 덮어쓰기)
 
-        log_size = log.stat().st_size
+        tr_size = tr.stat().st_size
         self.assertEqual(self.run_cli("delete", "--id", self.ids["tmp"], "--yes")[0], 0)
-        self.assertEqual(log.stat().st_size, log_size)
+        self.assertEqual(tr.stat().st_size, tr_size)
         self.assertEqual(idx.stat().st_size, idx_size)
 
         # 카테고리 사용 건수는 실제보다 적은 적이 없다. 090 의 "메모리 부족" import 가 건수를 저장한 뒤
@@ -738,7 +738,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(idx.stat().st_size % 16, 0)
         self.assertEqual(self.run_cli("list", "--all")[1], listing)  # 저장된 거래는 그대로
 
-        # compact 가 위치 인덱스를 고친 뒤 로그 교체 전에 꺼지면, 다음 실행 때 compact 전 상태로 되돌린다
+        # compact 가 위치 인덱스를 고친 뒤 거래 데이터 교체 전에 꺼지면, 다음 실행 때 compact 전 상태로 되돌린다
         for amount in ("15001", "15000"):  # 바꿨다 되돌려 내용은 같고 정리할 옛 줄만 생기게 한다
             with self.fake_input(["", "", "", amount, "", ""]):
                 self.assertEqual(self.run_cli("update", "--id", self._id("a"))[0], 0)
@@ -746,13 +746,13 @@ class RequirementChecklistTestCase(unittest.TestCase):
         real_replace = os.replace
 
         def stop_at_log_replace(src, dst):  # type: ignore[no-untyped-def]
-            if Path(dst) == log:
+            if Path(dst) == tr:
                 raise KeyboardInterrupt  # 강제 종료 흉내
             return real_replace(src, dst)
 
         with mock.patch("budget_app.transaction_store.os.replace", side_effect=stop_at_log_replace):
             self.assertEqual(self.run_cli("compact")[0], 130)
-        self.assertNotEqual(idx.read_bytes(), before_idx)  # 슬롯은 새 로그 위치로 바뀌었는데 로그는 옛것
+        self.assertNotEqual(idx.read_bytes(), before_idx)  # 슬롯은 새 거래 데이터 위치로 바뀌었는데 거래 데이터는 옛것
         code, out, _ = self.run_cli("list", "--all")
         self.assertEqual(code, 0)
         self.assertIn("[안내] 지난 compact 가 끝나지 않아 compact 전 상태로 되돌렸습니다", out)
@@ -761,13 +761,13 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertFalse((self.data_dir / "transactions.idx.compact-backup").exists())
         self.assertFalse((self.data_dir / "transactions.jsonl.tmp").exists())
 
-        # 로그 교체는 끝나고 복사본을 지우기 전에 꺼지면, 이미 짝이 맞으므로 복사본만 지운다
+        # 거래 데이터 교체는 끝나고 복사본을 지우기 전에 꺼지면, 이미 짝이 맞으므로 복사본만 지운다
         calls: list[int] = []
         real_fsync_dir = transaction_store.fsync_dir
 
         def stop_after_log_replace(path):  # type: ignore[no-untyped-def]
             calls.append(1)
-            if len(calls) == 2:  # 1번째: 복사본 이름 확정, 2번째: 로그 교체 확정
+            if len(calls) == 2:  # 1번째: 복사본 이름 확정, 2번째: 거래 데이터 교체 확정
                 raise KeyboardInterrupt
             return real_fsync_dir(path)
 

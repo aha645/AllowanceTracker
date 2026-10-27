@@ -50,16 +50,16 @@ def cmd_export(ctx: AppContext, args: argparse.Namespace) -> int:
 
 @command
 def cmd_compact(ctx: AppContext, args: argparse.Namespace) -> int:
-    """오래된(고아) 레코드를 정리해 로그 파일을 다시 쓴다."""
+    """오래된(고아) 레코드를 정리해 거래 데이터 파일을 다시 쓴다."""
     before = ctx.transactions.compact()  # 어긋났을 수 있는 카테고리 사용 건수도 이때 다시 센다
     after = ctx.transactions.stats()
-    saved = before.log_size - after.log_size
+    saved = before.tr_size - after.tr_size
     print("[완료] compact")
     print(
         format_table(
             ["항목", "이전", "이후"],
             [
-                ["로그 크기", f"{format_amount(before.log_size)}B", f"{format_amount(after.log_size)}B"],
+                ["거래 데이터 크기", f"{format_amount(before.tr_size)}B", f"{format_amount(after.tr_size)}B"],
                 ["살아있는 거래", f"{before.live_count}건", f"{after.live_count}건"],
                 ["슬롯 수(=최대 id)", f"{before.slot_count}", f"{after.slot_count}"],
             ],

@@ -150,7 +150,7 @@ def _add_file_parsers(sub: argparse._SubParsersAction[HintArgumentParser]) -> No
     _add_filter_options(p_export)
     p_export.set_defaults(func=cmd_export)
 
-    sub.add_parser("compact", help="오래된 레코드 정리(로그 파일 재작성)").set_defaults(func=cmd_compact)
+    sub.add_parser("compact", help="오래된 레코드 정리(거래 데이터 파일 재작성)").set_defaults(func=cmd_compact)
     sub.add_parser("backup", help="데이터 파일 타임스탬프 백업").set_defaults(func=cmd_backup)
 
 
