@@ -578,6 +578,9 @@ class RequirementChecklistTestCase(unittest.TestCase):
             self.assertIn("[오류]", err)
             self.assertIn("[힌트]", err)
             self.assertNotIn("Traceback", err)
+        code, _, err = self.run_cli("import", "--from", str(self.data_dir))  # 파일이 아닌 폴더
+        self.assertEqual(code, 1)
+        self.assertIn("가져올 CSV 가 파일이 아닙니다", err)
         _, out, _ = self.run_cli("summary", "--month", "2024-02")
         self.assertIn("총 지출  8,000원", out)  # 그대로
 
@@ -638,6 +641,10 @@ class RequirementChecklistTestCase(unittest.TestCase):
         code, _, err = self.run_cli("export", "--out", str(export_dir / "none.csv"))  # 조건 필수
         self.assertEqual(code, 1)
         self.assertIn("[오류]", err)
+        for half in (["--from", "2024-01-01"], ["--to", "2024-01-31"]):  # 기간은 둘 다 있어야 한다
+            code, _, err = self.run_cli("export", "--out", str(export_dir / "none.csv"), *half)
+            self.assertEqual(code, 1)
+            self.assertIn("--from 과 --to 는 함께 지정해야 합니다", err)
 
         # 데이터 폴더 안으로 내보내면 저장 파일을 CSV 로 덮어쓸 수 있으므로 거부하고, 파일은 그대로 둔다
         store = self.data_dir / "transactions.jsonl"

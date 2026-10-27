@@ -30,6 +30,11 @@ def cmd_import(ctx: AppContext, args: argparse.Namespace) -> int:
 def cmd_export(ctx: AppContext, args: argparse.Namespace) -> int:
     """조건에 맞는 거래를 CSV 로 내보낸다(--month 또는 --from+--to 필수)."""
     has_range = bool(args.date_from) and bool(args.date_to)
+    if not args.month and bool(args.date_from) != bool(args.date_to):  # 하나만 주면 "조건이 없다" 가 헷갈렸다
+        raise ValidationError(
+            "--from 과 --to 는 함께 지정해야 합니다.",
+            "예: --from 2024-01-01 --to 2024-01-31 (한 달이면 --month 2024-01)",
+        )
     if not args.month and not has_range:
         raise ValidationError(
             "내보내기 조건이 없습니다.",

@@ -49,6 +49,11 @@ class CsvService:
                 f"가져올 CSV 파일이 없습니다: {source}",
                 "--from 경로를 확인하세요.",
             )
+        if not source.is_file():  # 폴더를 주면 "입출력 오류 … 디스크 여유 공간" 으로 엉뚱하게 안내했다
+            raise ValidationError(
+                f"가져올 CSV 가 파일이 아닙니다: {source}",
+                "--from 에 폴더가 아닌 CSV 파일 경로를 지정하세요.",
+            )
         self.service.categories.ensure_registered()
         # 행마다 categories.jsonl 을 열지 않도록 한 번만 읽어 둔다(10만 행이면 20만 번 열던 병목).
         known = set(self.service.categories.names())
