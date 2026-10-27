@@ -278,8 +278,11 @@ class TransactionService:
     def stats(self) -> StorageStats:
         return self.store.stats()
 
-    def needs_compact(self) -> bool:
-        return self.store.needs_compact()
+    def live_count(self) -> int:
+        return self.store.live_count()
+
+    def needs_compact(self, stats: StorageStats | None = None) -> bool:
+        return self.store.needs_compact(stats)
 
     def compact(self) -> StorageStats:
         """옛 줄을 정리하고, 어긋났을 수 있는 카테고리 사용 건수도 다시 센다. 정리 전 상태를 돌려준다."""

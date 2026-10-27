@@ -75,6 +75,32 @@ class TransactionStoreRecoveryTests(unittest.TestCase):
         self.assertEqual(self.listing(), oracle)
         self.assertEqual(self.repo.date_index.count(), len(oracle))  # compact 가 옛 항목을 정리했다
 
+    def test_stats_counts_live_slots_and_bytes_across_chunks(self) -> None:
+        # stats()/live_count() 는 슬롯을 묶음(4096칸)째 array 로 센다. 16바이트씩 풀어 센 값과 같아야 한다.
+        rng = random.Random(7)
+        self.repo.append_transactions(
+            Transaction(id=0, date="2024-01-15", type="expense", category="식비", amount=i + 1,
+                        memo="메모" * rng.randrange(0, 20))
+            for i in range(10000)
+        )
+        for tx_id in [1, 4096, 4097, 8193, 10000, *rng.sample(range(2, 10000), 500)]:  # TX-1 은 start 가 0
+            if self.repo.read_transaction(tx_id) is not None:
+                self.repo.delete_transaction(tx_id)
+        for tx_id in rng.sample(range(2, 10000), 300):
+            old = self.repo.read_transaction(tx_id)
+            if old is not None:
+                self.repo.update_transaction(old.replace_fields(memo="수정"))
+        raw = self.repo.idx_path.read_bytes()
+        slots = [SLOT_STRUCT.unpack_from(raw, pos) for pos in range(0, len(raw), 16)]
+        live = [(start, end) for start, end in slots if (start, end) != (0, 0)]
+        stats = self.repo.stats()
+        self.assertEqual(stats.slot_count, 10000)
+        self.assertEqual(stats.live_count, len(live))
+        self.assertEqual(self.repo.live_count(), len(live))
+        self.assertEqual(stats.live_size, sum(end - start + 1 for start, end in live))
+        self.repo.compact()
+        self.assertEqual(self.repo.stats().live_size, self.repo.tr_path.stat().st_size)  # 정리 후에는 전부 살아있는 줄
+
     def test_same_date_ties_updates_back_and_forth_no_duplicates(self) -> None:
         for _ in range(400):
             self.repo.append_transaction(tx())

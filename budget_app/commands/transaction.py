@@ -125,7 +125,7 @@ def cmd_list(ctx: AppContext, args: argparse.Namespace) -> int:
     """거래 목록(최신순)."""
     limit = None if args.all else args.limit
     count = render_transactions(ctx.transactions.iter_latest(limit))
-    total_live = ctx.transactions.stats().live_count
+    total_live = ctx.transactions.live_count()
     if count == 0 and total_live == 0:
         print("[안내] 등록된 거래가 없습니다.")
         print("[힌트] `add` 명령으로 거래를 추가하세요.")
