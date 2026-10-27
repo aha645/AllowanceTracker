@@ -352,6 +352,37 @@ repo.update_transaction(repo.get_transaction(2).replace_fields(date="2023-01-01"
         self.assertIn("--verbose", err.getvalue())
         self.assertNotIn("Traceback", err.getvalue())
 
+    def test_corrupt_import_journal_fails_closed(self) -> None:
+        # import 진행 기록이 숫자가 아니거나 칸 크기(16)의 배수가 아니면 추측해 자르지 않고 [오류] 로 멈춘다
+        self.repo.append_transaction(tx())
+        before = self.repo.idx_path.read_bytes()
+        for content in ("garbage", "17"):
+            self.repo.import_journal_path.write_text(content, encoding="utf-8")
+            with self.assertRaises(StorageError):
+                self.open_repo()
+            self.assertEqual(self.repo.idx_path.read_bytes(), before)
+        proc = subprocess.run([sys.executable, "-m", "budget_app", "--data-dir", str(self.folder), "list"],
+                              cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("[오류] import 진행 기록(transactions.idx.import-pending)이 손상되었습니다", proc.stderr)
+
+    def test_line_breaks_in_memo_tags_and_category_become_spaces(self) -> None:
+        # 줄바꿈·탭이 그대로 저장되면 목록 표의 한 행이 여러 줄로 나뉜다. 옵션·CSV·수정·반복 규칙 모두 공백으로 바꾼다
+        ctx = AppContext.create(self.folder)
+        self.assertEqual(ctx.categories.add("생활\n비").name, "생활 비")
+        added = ctx.transactions.add(ctx.transactions.build_transaction(
+            "2024-01-05", "expense", "생활 비", 1000, memo="점심\n회사\t근처", tags="외\r\n식,점심"))
+        self.assertEqual((added.memo, added.tags), ("점심 회사 근처", ["외 식", "점심"]))
+        _, updated = ctx.transactions.update(added.id, memo="저녁\n약속")
+        self.assertEqual(updated.memo, "저녁 약속")
+        source = self.folder / "input.csv"
+        source.write_text('date,type,category,amount,memo,tags\n2024-01-06,expense,생활 비,1,"한\n줄",\n',
+                          encoding="utf-8")
+        self.assertEqual(ctx.csv.import_csv(source).imported, 1)
+        self.assertEqual(ctx.recurring.add(1, "expense", "생활 비", 1, memo="매월\n고정").memo, "매월 고정")
+        memos = {item.memo for item in ctx.transactions.iter_latest()}
+        self.assertEqual(memos, {"저녁 약속", "한 줄"})
+
     def test_slot_journal_with_wrong_hash_fails_closed(self) -> None:
         # 길이(72바이트)·형식 표시·범위는 맞고 원래 슬롯 1바이트만 바뀐 기록은 SHA-256 검사로만 걸러진다
         self.repo.append_transaction(tx())

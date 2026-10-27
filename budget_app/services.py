@@ -23,6 +23,7 @@ from .models import (
 from .stores import BudgetStore, CategoryStore, RecurringStore
 from .transaction_store import StorageStats, TransactionStore
 from .validators import (
+    clean_text,
     format_tags,
     parse_tags,
     validate_amount,
@@ -215,7 +216,7 @@ class TransactionService:
             type=validate_type(type_),
             category=self.categories.validate(category, known_categories),
             amount=validate_amount(amount),
-            memo=(memo or "").strip(),
+            memo=clean_text(memo),
             tags=tag_list,
         )
 
@@ -256,7 +257,7 @@ class TransactionService:
         if amount is not None:
             changes["amount"] = validate_amount(amount)
         if memo is not None:
-            changes["memo"] = memo.strip()
+            changes["memo"] = clean_text(memo)
         if tags is not None:
             changes["tags"] = parse_tags(tags)
         if not changes:
@@ -421,7 +422,7 @@ class RecurringService:
             type=validate_type(type_),
             category=self.categories.validate(category),
             amount=validate_amount(amount),
-            memo=(memo or "").strip(),
+            memo=clean_text(memo),
             tags=parse_tags(tags),
         )
         return self.store.add(rule)

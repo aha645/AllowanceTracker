@@ -579,7 +579,15 @@ class TransactionStore:
         tmp.unlink(missing_ok=True)  # 기록을 만드는 중에 멈춤. 슬롯은 아직 쓰지 않았다
         if not self.import_journal_path.exists():
             return
-        idx_size = int(self.import_journal_path.read_text(encoding="utf-8"))
+        raw = self.import_journal_path.read_text(encoding="utf-8").strip()
+        # 기록은 임시 이름으로 다 쓴 뒤 이름을 바꾸므로 정상적으로는 망가지지 않는다. 직접 편집·디스크 고장으로
+        # 망가졌다면 어디까지 잘라야 할지 추측하지 않고 멈춘다(.slot-undo 와 같음).
+        if not raw.isdigit() or int(raw) % SLOT_SIZE:
+            raise StorageError(
+                f"import 진행 기록({self.import_journal_path.name})이 손상되었습니다: '{raw[:20]}'",
+                "백업본으로 복구하세요. 이 파일은 끝나지 않은 import 를 취소할 위치(바이트)를 담고 있습니다.",
+            )
+        idx_size = int(raw)
         if self.index.size() > idx_size:
             with self.idx_path.open("r+b") as fp:
                 fp.truncate(idx_size)

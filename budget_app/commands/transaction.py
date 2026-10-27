@@ -25,6 +25,7 @@ from ..models import (
     ValidationError,
 )
 from ..validators import (
+    clean_text,
     format_tags,
     parse_tags,
     validate_amount,
@@ -71,7 +72,7 @@ def _prompt_transaction(ctx: AppContext) -> Transaction:
     _print_categories(names)
     category = prompt_until_valid("카테고리 (번호 또는 이름): ", _category_validator(ctx))
     amount = prompt_until_valid("금액 (양의 정수): ", validate_amount)
-    memo = input("메모 (선택, 엔터=건너뛰기, 따옴표 없이 입력): ").strip()
+    memo = clean_text(input("메모 (선택, 엔터=건너뛰기, 따옴표 없이 입력): "))
     tags = parse_tags(input("태그 (선택, 엔터=건너뛰기, 쉼표 구분): "))
     return Transaction(
         id=0,
@@ -205,7 +206,7 @@ def cmd_update(ctx: AppContext, args: argparse.Namespace) -> int:
         f"금액 [{current.amount}]: ", validate_amount, default=current.amount, allow_blank=True
     )
     memo = prompt_until_valid(
-        f"메모 [{current.memo}] (따옴표 없이 입력): ", _clearable(lambda raw: raw.strip()),
+        f"메모 [{current.memo}] (따옴표 없이 입력): ", _clearable(clean_text),
         default=current.memo, allow_blank=True,
     )
     tags = prompt_until_valid(

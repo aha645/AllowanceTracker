@@ -10,6 +10,8 @@ from datetime import datetime
 
 from .models import DATE_FORMAT, MONTH_FORMAT, TRANSACTION_TYPES, ValidationError
 
+# 줄바꿈·탭 등. 메모나 태그에 들어가면 목록 표의 한 행이 여러 줄로 나뉘어 열이 어긋난다.
+_LINE_BREAKS = re.compile(r"[\r\n\t\v\f\x85\u2028\u2029]+")
 # 쉼표는 천 단위(세 자리마다)로 찍은 것만 받는다. 1,2,3 이나 600,00 같은 오타가 다른 금액으로 저장되지 않게 한다.
 _GROUPED_AMOUNT = re.compile(r"[+-]?\d{1,3}(?:,\d{3})+")
 
@@ -102,13 +104,18 @@ def validate_day(value: str | int) -> int:
     return day
 
 
+def clean_text(value: str | None) -> str:
+    """메모·태그·카테고리 이름의 줄바꿈과 탭을 공백 하나로 바꾸고 앞뒤 공백을 지운다(--memo $'a\\nb', CSV 등)."""
+    return _LINE_BREAKS.sub(" ", value or "").strip()
+
+
 def parse_tags(value: str | None) -> list[str]:
     """쉼표 구분 문자열을 태그 리스트로 바꾼다(공백 제거, 빈 값·중복 제거)."""
     if not value:
         return []
     tags: list[str] = []
     for raw in value.split(","):
-        tag = raw.strip()
+        tag = clean_text(raw)
         if tag and tag not in tags:
             tags.append(tag)
     return tags

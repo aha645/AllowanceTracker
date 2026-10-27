@@ -9,7 +9,7 @@
             030  search     기간/카테고리/타입/메모/태그, AND 결합, 조건 없음 거부
             040  summary    수입/지출/잔액, 지출 TOP N, 데이터 없는 달
             050  budget     설정 → 사용률 → 덮어쓰기 → 초과 경고
-            060  category   중복 차단, 목록, 사용 중 카테고리 삭제 차단
+            060  category   중복 차단, 숫자로만 된 이름 거부, 목록, 사용 중 카테고리 삭제 차단
             070  update     대화형 부분 수정(엔터=유지, -=비우기), summary 반영, 없는 id
             080  delete     삭제 → list/summary 반영, 없는 id
             090  import     CSV 가져오기(잘못된 행 skip) → summary 반영
@@ -432,6 +432,9 @@ class RequirementChecklistTestCase(unittest.TestCase):
         code, _, err = self.run_cli("category", "add", "--name", "식비")  # 중복 등록 차단
         self.assertEqual(code, 1)
         self.assertIn("이미 등록", err)
+        code, _, err = self.run_cli("category", "add", "--name", "3")  # 대화형 번호 입력과 헷갈리는 숫자 이름
+        self.assertEqual(code, 1)
+        self.assertIn("숫자로만 지을 수 없습니다", err)
 
         code, out, _ = self.run_cli("category", "list")
         self.assertEqual(code, 0)
