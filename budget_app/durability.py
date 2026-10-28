@@ -16,6 +16,8 @@ from .models import StorageError
 
 def fsync_dir(path: Path) -> None:
     """파일 이름 변경·삭제 사실도 전원 차단 뒤 유지되도록 디렉터리를 동기화한다."""
+    if os.name == "nt":  # Windows 는 디렉터리를 fd 로 열 수 없고, 이름 교체·삭제는 NTFS 저널이 확정한다
+        return
     fd = os.open(path, os.O_RDONLY)
     try:
         os.fsync(fd)

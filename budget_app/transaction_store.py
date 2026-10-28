@@ -751,7 +751,7 @@ class TransactionStore:
         # 확정한 뒤 이름을 바꾸므로, 복사본 이름의 파일이 있으면 그 복사본은 항상 완전하다.
         backup_tmp = self.compact_backup_path.with_name(self.compact_backup_path.name + ".tmp")
         shutil.copyfile(self.idx_path, backup_tmp)
-        with backup_tmp.open("rb") as fp:
+        with backup_tmp.open("r+b") as fp:  # Windows 는 쓰기 권한으로 연 파일만 fsync 할 수 있다
             os.fsync(fp.fileno())
         os.replace(backup_tmp, self.compact_backup_path)
         fsync_dir(self.data_dir)
