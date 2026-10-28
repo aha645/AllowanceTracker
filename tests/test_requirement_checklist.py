@@ -572,7 +572,15 @@ class RequirementChecklistTestCase(unittest.TestCase):
             + "x" * 140_000 + "\n",  # csv 모듈의 필드 길이 한도(131072자)를 넘긴다
             encoding="utf-8",
         )
-        for path in (broken, unclosed):
+        # 필드 길이 한도에 못 미치는 짧은 메모라도, 따옴표가 안 닫히면 뒤 행을 메모로 흡수하지 않고 멈춘다
+        unclosed_short = self.data_dir / "unclosed_short.csv"
+        unclosed_short.write_text(
+            "date,type,category,amount,memo,tags\n"
+            '2024-02-01,expense,식비,1000,"닫히지 않은 메모,\n'
+            "2024-02-02,expense,식비,2000,정상행,\n",
+            encoding="utf-8",
+        )
+        for path in (broken, unclosed, unclosed_short):
             code, _, err = self.run_cli("import", "--from", str(path))
             self.assertEqual(code, 1)
             self.assertIn("[오류]", err)

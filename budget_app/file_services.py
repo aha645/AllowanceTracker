@@ -87,7 +87,8 @@ class CsvService:
         던져 import 전체를 멈춘다.
         """
         with source.open("r", encoding="utf-8-sig", newline="") as fp:
-            reader = csv.DictReader(fp)
+            # strict 가 아니면 닫히지 않은 따옴표를 오류 없이 파일 끝까지 한 칸으로 읽어, 뒤 행들이 메모에 흡수됐다
+            reader = csv.DictReader(fp, strict=True)
             try:
                 missing = [f for f in ("date", "type", "category", "amount") if f not in (reader.fieldnames or [])]
                 if missing:
