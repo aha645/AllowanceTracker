@@ -394,6 +394,13 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertIn("잔액     2,468,000원", out)
         self.assertLess(out.index("월세"), out.index("교통"))  # 지출 큰 순서
         self.assertNotIn("식비", out)  # TOP 2 에 들지 못함
+        self.assertIn("[카테고리별 지출 TOP 2]", out)
+
+        # 지출 카테고리(식비·교통·월세)보다 큰 N 을 주면 제목은 실제로 출력한 개수
+        code, out, _ = self.run_cli("summary", "--month", "2024-01", "--top", "5")
+        self.assertEqual(code, 0)
+        self.assertIn("[카테고리별 지출 TOP 3]", out)
+        self.assertNotIn("TOP 5", out)
 
         code, out, _ = self.run_cli("summary", "--month", "2023-12")  # 거래가 없는 달
         self.assertEqual(code, 0)

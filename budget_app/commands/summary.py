@@ -33,7 +33,8 @@ def cmd_summary(ctx: AppContext, args: argparse.Namespace) -> int:
     print(f"  잔액     {format_amount(summary.balance)}원  (거래 {summary.count}건)")
 
     if summary.expense_by_category:
-        print(f"\n[카테고리별 지출 TOP {top}]")
+        # 제목은 요청한 N 이 아니라 실제로 출력하는 줄 수(카테고리가 N 개보다 적으면 그만큼만 나온다)
+        print(f"\n[카테고리별 지출 TOP {len(summary.expense_by_category)}]")
         rows = [
             [str(rank), name, f"{format_amount(amount)}원",
              f"{amount / summary.total_expense * 100:.1f}%"]
