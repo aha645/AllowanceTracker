@@ -225,14 +225,13 @@ class TransactionService:
         self.categories.adjust_counts({tx.category: 1})  # 거래보다 먼저(CategoryService 설명)
         return self.store.append_transaction(tx)
 
-    def add_many(self, transactions: Iterable[Transaction], category_counts: Mapping[str, int]) -> int:
+    def add_many(self, transactions: Iterable[Transaction]) -> int:
         """여러 거래를 한 번에 저장하고 건수를 돌려준다(import 용: 날짜 인덱스를 한 번만 병합).
 
-        category_counts 는 저장할 거래의 카테고리별 건수다. 행마다 categories.jsonl 을 다시 쓰지 않도록
-        호출자가 미리 합산해 넘기고, 여기서 거래보다 먼저 한 번만 반영한다.
+        카테고리별 건수는 저장소가 거래를 쓰며 세고, 거래가 보이게 되기 직전에 한 번만 반영한다
+        (행마다 categories.jsonl 을 다시 쓰지 않고, 건수가 실제보다 적어지는 순간도 없다).
         """
-        self.categories.adjust_counts(category_counts)
-        return self.store.append_transactions(transactions)
+        return self.store.append_transactions(transactions, before_commit=self.categories.adjust_counts)
 
     def update(
         self,

@@ -77,6 +77,43 @@ class TransactionStoreRecoveryTests(unittest.TestCase):
         self.assertEqual(self.listing(), oracle)
         self.assertEqual(self.repo.date_index.count(), len(oracle))  # compact 가 옛 항목을 정리했다
 
+    def test_import_counts_reach_before_commit_and_failed_write_leaves_nothing(self) -> None:
+        # 카테고리 건수는 쓴 거래로 세어 확정 직전에 한 번 넘긴다
+        calls: list[dict[str, int]] = []
+        self.assertEqual(self.repo.append_transactions([tx(), tx("2023-01-01")], before_commit=calls.append), 2)
+        self.assertEqual(calls, [{"식비": 2}])
+        expected = self.listing()
+
+        # CSV 를 읽다 멈추면(행이 오류를 냄) 이번 import 가 쓴 줄을 잘라 내고, 건수·진행 기록도 건드리지 않는다
+        size = self.repo.tr_path.stat().st_size
+        def rows():
+            yield tx("2024-02-01")
+            raise ValueError("읽기 실패")
+        with self.assertRaises(ValueError):
+            self.repo.append_transactions(rows(), before_commit=calls.append)
+        self.assertEqual(self.repo.tr_path.stat().st_size, size)
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(self.repo.import_journal_path.exists())
+        self.assertEqual(self.listing(), expected)
+
+    def test_cancelled_import_recounts_categories(self) -> None:
+        # 건수를 반영한 뒤 슬롯을 쓰기 전에 멈추면, 다음 시작이 import 를 취소하고 건수를 다시 센다
+        ctx = AppContext.create(self.folder)
+        ctx.categories.add("식비")
+        ctx.transactions.add(ctx.transactions.build_transaction("2024-01-05", "expense", "식비", 1000))
+        source = self.folder / "input.csv"
+        source.write_text("date,type,category,amount,memo,tags\n" + "2024-01-06,expense,식비,1,,\n" * 5,
+                          encoding="utf-8")
+        with mock.patch.object(TransactionStore, "_commit_import", side_effect=KeyboardInterrupt), \
+             self.assertRaises(KeyboardInterrupt):
+            ctx.csv.import_csv(source)
+        self.assertEqual(ctx.categories.store.count_of("식비"), 6)  # 슬롯까지 썼지만 완료 기록을 못 지움
+        reopened = AppContext.create(self.folder)
+        self.assertIn("지난 import 가 끝나지 않아 그 import 전체를 취소했습니다. 같은 CSV 를 다시 가져오세요.",
+                      reopened.recovered)
+        self.assertEqual(reopened.categories.store.count_of("식비"), 1)
+        self.assertEqual(len(self.listing()), 1)
+
     def test_stats_counts_live_slots_and_bytes_across_chunks(self) -> None:
         # stats()/live_count() 는 슬롯을 묶음(4096칸)째 array 로 센다. 16바이트씩 풀어 센 값과 같아야 한다.
         rng = random.Random(7)
@@ -388,7 +425,8 @@ repo.update_transaction(repo.get_transaction(2).replace_fields(date="2023-01-01"
         _, updated = ctx.transactions.update(added.id, memo="저녁\n약속")
         self.assertEqual(updated.memo, "저녁 약속")
         source = self.folder / "input.csv"
-        source.write_text('date,type,category,amount,memo,tags\n2024-01-06,expense,생활 비,1,"한\n줄",\n',
+        # CSV 는 한 줄을 한 행으로 읽으므로(칸 안의 줄바꿈은 그 행을 건너뜀) 탭으로 확인한다
+        source.write_text('date,type,category,amount,memo,tags\n2024-01-06,expense,생활 비,1,"한\t줄",\n',
                           encoding="utf-8")
         self.assertEqual(ctx.csv.import_csv(source).imported, 1)
         self.assertEqual(ctx.recurring.add(1, "expense", "생활 비", 1, memo="매월\n고정").memo, "매월 고정")

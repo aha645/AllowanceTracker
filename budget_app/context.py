@@ -42,6 +42,8 @@ class AppContext:
         recurring_store.ensure_file()
         categories = CategoryService(category_store, transaction_store, recurring_store)
         categories.ensure_counts()
+        if transaction_store.import_cancelled:  # 취소된 import 가 늘려 둔 건수를 실제 값으로 되돌린다
+            categories.recount()
         transactions = TransactionService(transaction_store, categories)
         return cls(
             data_dir=data_dir,

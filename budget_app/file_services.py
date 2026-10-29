@@ -39,9 +39,8 @@ class CsvService:
     def import_csv(self, path: Path) -> ImportReport:
         """행 단위로 검증하며 가져온다. 실패한 행은 건너뛰고 사유를 모아 돌려준다.
 
-        파일을 두 번 읽는다. 1차는 검증만 해서 건너뛸 행을 모으고, 2차는 다시 읽으며 유효한 행을
-        바로 저장한다. 행을 메모리에 모아 두지 않으면서도, 파일 자체를 못 읽으면(인코딩/형식 오류)
-        1차에서 멈추므로 아무것도 저장되지 않는다.
+        파일은 한 번만 읽는다. 유효한 행은 읽는 대로 저장소에 흘려보내되, 저장소는 끝까지 읽은 뒤에야
+        확정하므로(append_transactions) 도중에 멈추면 아무것도 저장되지 않는다. 행을 메모리에 모아 두지 않는다.
         """
         source = Path(path)
         if not source.exists():
@@ -59,23 +58,19 @@ class CsvService:
         known = set(self.service.categories.names())
         errors: list[tuple[int, str]] = []
         skipped = 0
-        # 유효한 행의 카테고리별 건수. 1차에서 합산해 두었다가 거래를 쓰기 전에 한 번만 저장한다
-        # (행마다 categories.jsonl 을 다시 쓰지 않도록). 카테고리 수만큼만 차지한다.
-        category_counts: dict[str, int] = {}
-        for lineno, result in self._iter_rows(source, known):
-            if isinstance(result, ValidationError):
-                skipped += 1
-                if len(errors) < MAX_REPORTED_ERRORS:
-                    errors.append((lineno, result.message))
-            else:
-                category_counts[result.category] = category_counts.get(result.category, 0) + 1
-        imported = 0
-        if category_counts:
-            # 옛 날짜가 섞여 있어도 날짜 인덱스는 add_many 안에서 한 번만 병합된다
-            imported = self.service.add_many(
-                (tx for _, tx in self._iter_rows(source, known) if isinstance(tx, Transaction)),
-                category_counts,
-            )
+
+        def valid_rows() -> Iterator[Transaction]:
+            nonlocal skipped
+            for lineno, result in self._iter_rows(source, known):
+                if isinstance(result, ValidationError):
+                    skipped += 1
+                    if len(errors) < MAX_REPORTED_ERRORS:
+                        errors.append((lineno, result.message))
+                else:
+                    yield result
+
+        # 옛 날짜가 섞여 있어도 날짜 인덱스는 add_many 안에서 한 번만 병합된다
+        imported = self.service.add_many(valid_rows())
         return ImportReport(imported=imported, skipped=skipped, errors=errors)
 
     def _iter_rows(
@@ -83,43 +78,65 @@ class CsvService:
     ) -> Iterator[tuple[int, Transaction | ValidationError]]:
         """CSV 를 한 행씩 검증해 (줄 번호, 거래 또는 그 행의 검증 오류)를 낸다.
 
-        파일 자체를 더 읽을 수 없으면(헤더 누락, UTF-8 아님, 닫히지 않은 따옴표 등) ValidationError 를
-        던져 import 전체를 멈춘다.
+        물리적인 한 줄을 한 행으로 읽는다. 저장할 때 메모·태그의 줄바꿈을 공백으로 바꾸므로 이 앱이 내보낸
+        CSV 에는 여러 줄에 걸친 칸이 없다. 그래서 닫히지 않은 따옴표나 UTF-8 이 아닌 바이트는 그 줄만
+        건너뛴다. 예전처럼 파일 전체를 CSV 로 읽으면 따옴표 하나가 뒤 행들을 메모로 흡수하거나, 따옴표 두 개가
+        우연히 짝을 이뤄 두 행이 한 거래로 합쳐졌다. 헤더를 읽을 수 없을 때만 ValidationError 로 멈춘다.
         """
-        with source.open("r", encoding="utf-8-sig", newline="") as fp:
-            # strict 가 아니면 닫히지 않은 따옴표를 오류 없이 파일 끝까지 한 칸으로 읽어, 뒤 행들이 메모에 흡수됐다
-            reader = csv.DictReader(fp, strict=True)
-            try:
-                missing = [f for f in ("date", "type", "category", "amount") if f not in (reader.fieldnames or [])]
-                if missing:
-                    raise ValidationError(
-                        f"CSV 헤더에 필수 컬럼이 없습니다: {', '.join(missing)}",
-                        f"헤더는 {','.join(CSV_FIELDS)} 형식이어야 합니다.",
+        with source.open("rb") as fp:
+            header = self._parse_line(fp.readline(), encoding="utf-8-sig")
+            if isinstance(header, ValidationError):
+                raise ValidationError(
+                    f"CSV 헤더를 읽을 수 없습니다: {header.message}",
+                    f"첫 줄은 {','.join(CSV_FIELDS)} 형식이어야 합니다. 엑셀이라면 'CSV UTF-8(쉼표로 분리)' 형식으로 저장하세요.",
+                )
+            missing = [f for f in ("date", "type", "category", "amount") if f not in header]
+            if missing:
+                raise ValidationError(
+                    f"CSV 헤더에 필수 컬럼이 없습니다: {', '.join(missing)}",
+                    f"헤더는 {','.join(CSV_FIELDS)} 형식이어야 합니다.",
+                )
+            for lineno, raw in enumerate(fp, start=2):
+                values = self._parse_line(raw)
+                if isinstance(values, ValidationError):
+                    yield lineno, values
+                    continue
+                if not values:  # 빈 줄은 csv.DictReader 처럼 건너뛴다
+                    continue
+                row = dict(zip(header, values))
+                try:
+                    yield lineno, self.service.build_transaction(
+                        date=row.get("date", ""),
+                        type_=row.get("type", ""),
+                        category=row.get("category", ""),
+                        amount=row.get("amount", ""),
+                        memo=row.get("memo", ""),
+                        tags=row.get("tags", ""),
+                        known_categories=known,
                     )
-                for lineno, row in enumerate(reader, start=2):
-                    try:
-                        yield lineno, self.service.build_transaction(
-                            date=row.get("date", ""),
-                            type_=row.get("type", ""),
-                            category=row.get("category", ""),
-                            amount=row.get("amount", ""),
-                            memo=row.get("memo", "") or "",
-                            tags=row.get("tags", "") or "",
-                            known_categories=known,
-                        )
-                    except ValidationError as exc:
-                        yield lineno, exc
-            except UnicodeDecodeError as exc:
-                # gotcha: 파일을 덩어리로 디코딩하므로 실패한 줄 번호는 정확하지 않아 싣지 않는다
-                raise ValidationError(
-                    f"CSV 파일을 UTF-8 로 읽을 수 없습니다: {source}",
-                    "엑셀이라면 'CSV UTF-8(쉼표로 분리)' 형식으로 다시 저장하세요. 아무것도 저장하지 않았습니다.",
-                ) from exc
-            except csv.Error as exc:
-                raise ValidationError(
-                    f"CSV 형식이 잘못되어 {reader.line_num}번째 줄 근처를 읽을 수 없습니다: {exc}",
-                    '메모 등에 연 따옴표(")가 닫혔는지 확인하세요. 아무것도 저장하지 않았습니다.',
-                ) from exc
+                except ValidationError as exc:
+                    yield lineno, exc
+
+    @staticmethod
+    def _parse_line(raw: bytes, encoding: str = "utf-8") -> list[str] | ValidationError:
+        """CSV 한 줄을 칸 목록으로 바꾼다. 읽을 수 없으면 그 줄의 오류를 돌려준다."""
+        try:
+            text = raw.decode(encoding).rstrip("\r\n")
+        except UnicodeDecodeError:
+            return ValidationError(
+                "UTF-8 이 아닌 글자가 있습니다.",
+                "엑셀이라면 'CSV UTF-8(쉼표로 분리)' 형식으로 다시 저장하세요.",
+            )
+        if not text:
+            return []
+        try:
+            # strict 가 아니면 "점심"맛있음 처럼 닫은 따옴표 뒤에 글자가 붙어도 오류 없이 이어 붙여 읽는다
+            return next(csv.reader([text], strict=True))
+        except csv.Error as exc:
+            return ValidationError(
+                f'따옴표(")가 맞지 않습니다: {exc}',
+                '메모 등에 연 따옴표가 닫혔는지, 칸 안의 따옴표를 "" 로 두 번 썼는지 확인하세요.',
+            )
 
     def _inside_data_dir(self, target: Path) -> bool:
         """target 이 데이터 폴더 안인지. 경로 문자열이 아니라 실제 폴더가 같은지로 비교한다.

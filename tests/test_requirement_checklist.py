@@ -569,30 +569,47 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertIn("총 지출  8,000원", out)
         listed_before = self._listed_ids()
 
-        # 파일 자체를 못 읽으면(뒤쪽에 UTF-8 이 아닌 바이트 / 닫히지 않은 따옴표) 앞쪽 정상 행도 저장하지 않는다
-        valid_rows = "".join(f"2024-02-{d:02d},expense,식비,1000,,\n" for d in range(1, 29)) * 20
-        broken = self.data_dir / "broken.csv"
-        broken.write_bytes(("date,type,category,amount,memo,tags\n" + valid_rows).encode("utf-8") + b"\xff\xfe\n")
-        unclosed = self.data_dir / "unclosed.csv"
-        unclosed.write_text(
-            "date,type,category,amount,memo,tags\n" + valid_rows + '2024-02-01,expense,식비,1000,"닫히지 않은 메모'
-            + "x" * 140_000 + "\n",  # csv 모듈의 필드 길이 한도(131072자)를 넘긴다
-            encoding="utf-8",
-        )
-        # 필드 길이 한도에 못 미치는 짧은 메모라도, 따옴표가 안 닫히면 뒤 행을 메모로 흡수하지 않고 멈춘다
-        unclosed_short = self.data_dir / "unclosed_short.csv"
-        unclosed_short.write_text(
-            "date,type,category,amount,memo,tags\n"
-            '2024-02-01,expense,식비,1000,"닫히지 않은 메모,\n'
-            "2024-02-02,expense,식비,2000,정상행,\n",
-            encoding="utf-8",
-        )
-        for path in (broken, unclosed, unclosed_short):
+        # UTF-8 이 아니거나 따옴표가 맞지 않는 줄은 그 줄만 건너뛰고, 뒤 행을 메모로 흡수하거나 두 행을
+        # 합치지 않는다. 앞뒤 정상 행은 저장되므로 공유 데이터에 섞이지 않게 임시 폴더에서 확인한다.
+        header = "date,type,category,amount,memo,tags\n".encode("utf-8")
+        before_row = "2024-02-01,expense,식비,1000,앞,\n".encode("utf-8")
+        after_row = "2024-02-03,expense,식비,3000,뒤,\n".encode("utf-8")
+        broken_lines = {
+            "UTF-8 아님": (b"2024-02-02,expense,\xff\xfe,2000,,\n", "UTF-8 이 아닌 글자가 있습니다"),
+            # csv 모듈의 필드 길이 한도(131072자)를 넘기는 긴 메모
+            "닫히지 않은 따옴표(긴 메모)": (('2024-02-02,expense,식비,2000,"' + "x" * 140_000 + "\n").encode("utf-8"),
+                                    '따옴표\\("\\)가 맞지 않습니다'),
+            "닫히지 않은 따옴표(짧은 메모)": ('2024-02-02,expense,식비,2000,"닫히지 않은 메모,\n'.encode("utf-8"),
+                                     '따옴표\\("\\)가 맞지 않습니다'),
+            "닫은 따옴표 뒤 글자": ('2024-02-02,expense,식비,2000,"점심"맛있음,\n'.encode("utf-8"),
+                              '따옴표\\("\\)가 맞지 않습니다'),
+        }
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(self, "data_dir", Path(tmp)):
+            self.assertEqual(self.run_cli("category", "add", "--name", "식비")[0], 0)
+            for label, (line, reason) in broken_lines.items():
+                with self.subTest(label):
+                    path = Path(tmp) / "broken.csv"
+                    path.write_bytes(header + before_row + line + after_row)
+                    code, out, _ = self.run_cli("import", "--from", str(path))
+                    self.assertEqual(code, 0)
+                    self.assertIn("imported=2, skipped=1", out)
+                    self.assertRegex(out, rf"(?m)^\s*3\s+{reason}")
+            # 따옴표를 빠뜨린 줄 뒤에 우연히 따옴표로 끝나는 줄이 와도, 두 행이 한 거래로 합쳐지지 않는다
+            path = Path(tmp) / "pair.csv"
+            path.write_bytes(header + '2024-02-04,expense,식비,4000,"점심\n2024-02-05,expense,식비,5000,저녁"\n'
+                             .encode("utf-8"))
+            code, out, _ = self.run_cli("import", "--from", str(path))
+            self.assertIn("imported=1, skipped=1", out)
+            self.assertIn("5,000", self.run_cli("list", "--all")[1])
+            # 헤더를 읽을 수 없으면 아무것도 저장하지 않고 멈춘다
+            listed = self.run_cli("list", "--all")[1]
+            path.write_bytes(b"\xff\xfe" + header[2:] + before_row)
             code, _, err = self.run_cli("import", "--from", str(path))
             self.assertEqual(code, 1)
-            self.assertIn("[오류]", err)
+            self.assertIn("[오류] CSV 헤더를 읽을 수 없습니다", err)
             self.assertIn("[힌트]", err)
             self.assertNotIn("Traceback", err)
+            self.assertEqual(self.run_cli("list", "--all")[1], listed)
         code, _, err = self.run_cli("import", "--from", str(self.data_dir))  # 파일이 아닌 폴더
         self.assertEqual(code, 1)
         self.assertIn("가져올 CSV 가 파일이 아닙니다", err)
@@ -756,11 +773,10 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(tr.stat().st_size, tr_size)
         self.assertEqual(idx.stat().st_size, idx_size)
 
-        # 카테고리 사용 건수는 실제보다 적은 적이 없다. 090 의 "메모리 부족" import 가 건수를 저장한 뒤
-        # 거래 저장 전에 멈췄으므로 그만큼은 많다(안전한 쪽으로 틀림)
+        # import 는 건수를 거래가 보이기 직전에만 바꾸므로, 090 의 "메모리 부족" 처럼 거래를 쓰기 전에 멈춘
+        # import 는 건수를 늘려 두지 않는다. 확정 전에 멈춘 import 는 150 에서 확인한다(취소 + 다시 세기)
         saved, actual = self._category_counts()
-        self.assertTrue(all(saved[name] >= actual[name] for name in saved), (saved, actual))
-        self.assertNotEqual(saved, actual)
+        self.assertEqual(saved, actual)
 
         # 건수를 저장한 뒤 거래를 쓰기 전에 꺼지면 건수만 많아진다 → 삭제 때 확인해 보고 허용
         self.assertEqual(self.run_cli("category", "add", "--name", "중단_카테고리")[0], 0)

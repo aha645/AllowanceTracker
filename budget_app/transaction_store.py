@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from itertools import chain
-from typing import BinaryIO, Iterable, Iterator
+from typing import BinaryIO, Callable, Iterable, Iterator, Mapping
 
 from .durability import SlotUndo, fsync_dir
 from .models import NotFoundError, StorageError, Transaction
@@ -407,6 +407,8 @@ class TransactionStore:
         self.slot_undo = SlotUndo(self.idx_path)
         #: 이번 실행에서 자동으로 바로잡은 일(사용자에게 [안내] 로 알린다).
         self.recovered: list[str] = []
+        #: 끝나지 않은 import 를 취소했는지. 그 import 가 늘린 카테고리 건수를 다시 세야 한다.
+        self.import_cancelled: bool = False
 
     # ------------------------------------------------------------------ 초기화
     def ensure_files(self) -> None:
@@ -508,12 +510,20 @@ class TransactionStore:
         self.slot_undo.commit()
         return stored
 
-    def append_transactions(self, transactions: Iterable[Transaction]) -> int:
+    def append_transactions(
+        self,
+        transactions: Iterable[Transaction],
+        before_commit: Callable[[Mapping[str, int]], None] | None = None,
+    ) -> int:
         """여러 거래를 한 번에 저장하고 저장한 건수를 돌려준다(import 용).
 
         거래 데이터 레코드와 인덱스 슬롯은 각각 한 번에 이어 쓰고(fsync 도 파일당 한 번), 날짜 인덱스는 모아서
         한 번에 병합한다. 옛 날짜가 섞여 있어도 행마다 파일을 다시 쓰지 않는다.
         거래 객체는 모으지 않고, 슬롯과 날짜 키는 건당 16+12바이트 배열에 담는다.
+
+        before_commit 은 카테고리별 건수를 받아, 진행 기록을 쓴 뒤 슬롯을 쓰기 전에 한 번 불린다. 그 사이에
+        꺼지면 다음 실행이 import 를 취소하고 건수를 다시 세므로(ensure_files → import_cancelled), 건수는
+        실제보다 적어지지도 계속 많게 남지도 않는다.
         """
         self.ensure_files()
         next_id = self.index.next_id()
@@ -524,20 +534,30 @@ class TransactionStore:
         slots = bytearray()
         ordinals = array("I")
         ids = array("Q")
-        with self.tr_path.open("ab") as tr:
-            tr.seek(0, os.SEEK_END)
-            offset = tr.tell()
-            for tx in transactions:
-                stored = tx.replace_fields(id=next_id + count)
-                payload = stored.to_json().encode("utf-8")
-                tr.write(payload + b"\n")
-                slots += SLOT_STRUCT.pack(offset, offset + len(payload))
-                offset += len(payload) + 1
-                count += 1
-                ordinals.append(date_ordinal(stored.date))
-                ids.append(stored.id)
-            tr.flush()
-            os.fsync(tr.fileno())
+        category_counts: dict[str, int] = {}
+        start: int | None = None
+        try:
+            with self.tr_path.open("ab") as tr:
+                tr.seek(0, os.SEEK_END)
+                offset = start = tr.tell()
+                for tx in transactions:
+                    stored = tx.replace_fields(id=next_id + count)
+                    payload = stored.to_json().encode("utf-8")
+                    tr.write(payload + b"\n")
+                    slots += SLOT_STRUCT.pack(offset, offset + len(payload))
+                    offset += len(payload) + 1
+                    count += 1
+                    ordinals.append(date_ordinal(stored.date))
+                    ids.append(stored.id)
+                    category_counts[stored.category] = category_counts.get(stored.category, 0) + 1
+                tr.flush()
+                os.fsync(tr.fileno())
+        except BaseException:
+            # 아직 어떤 슬롯도 가리키지 않는 이번 import 의 줄만 잘라 낸다. 안 하면 100만 건 import 가 끝 무렵
+            # 실패했을 때 수백 MB 가 compact 전까지 남는다. 자르다 또 실패해도 남은 줄은 읽히지 않는다.
+            if start is not None:
+                self._truncate_tr(start)
+            raise
         if not count:
             return 0
         # append_transaction() 과 같은 이유로 날짜 항목을 슬롯보다 먼저 쓴다. 슬롯 묶음을 쓰기 전에
@@ -547,12 +567,21 @@ class TransactionStore:
         # 그래서 쓰기 전 크기를 기록해 두고, 다 쓴 뒤 그 기록을 지우는 순간을 import 완료로 삼는다.
         # 기록이 남아 있으면 다음 실행 때 _recover_interrupted_import() 가 그 크기로 잘라 import 전체를 취소한다.
         self._write_import_journal(self.index.size())
+        # 기록보다 먼저 건수를 바꾸면, 그 사이에 꺼졌을 때 기록이 없어 다시 세지 못하고 많게 남는다
+        if before_commit is not None:
+            before_commit(category_counts)
         with self.idx_path.open("ab") as idx:
             idx.write(slots)
             idx.flush()
             os.fsync(idx.fileno())
         self._commit_import()
         return count
+
+    def _truncate_tr(self, size: int) -> None:
+        with self.tr_path.open("r+b") as fp:
+            fp.truncate(size)
+            fp.flush()
+            os.fsync(fp.fileno())
 
     def _write_import_journal(self, idx_size: int) -> None:
         """import 전 위치 파일 크기를 기록한다. 임시 이름으로 쓰고 바꿔서, 기록 파일은 없거나 완전하다."""
@@ -573,7 +602,8 @@ class TransactionStore:
         """끝나지 않은 import 가 쓴 슬롯을 기록된 크기로 잘라 그 import 전체를 취소한다.
 
         슬롯을 다 썼지만 기록을 지우기 전에 꺼진 경우도 취소한다(완료 시점은 기록 삭제). 남는 jsonl 줄과
-        날짜 항목은 슬롯 범위 밖이라 읽을 때 건너뛰고 compact 때 정리되며, 카테고리 건수는 많게만 틀린다.
+        날짜 항목은 슬롯 범위 밖이라 읽을 때 건너뛰고 compact 때 정리된다. 카테고리 건수는 이미 늘었을 수
+        있으므로 import_cancelled 로 알려 AppContext 가 다시 세게 한다.
         """
         tmp = self.import_journal_path.with_name(self.import_journal_path.name + ".tmp")
         tmp.unlink(missing_ok=True)  # 기록을 만드는 중에 멈춤. 슬롯은 아직 쓰지 않았다
@@ -595,6 +625,7 @@ class TransactionStore:
                 os.fsync(fp.fileno())
         self.import_journal_path.unlink()
         fsync_dir(self.data_dir)
+        self.import_cancelled = True
         self.recovered.append("지난 import 가 끝나지 않아 그 import 전체를 취소했습니다. 같은 CSV 를 다시 가져오세요.")
 
     def update_transaction(self, tx: Transaction) -> Transaction:
