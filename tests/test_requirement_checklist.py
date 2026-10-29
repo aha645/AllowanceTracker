@@ -211,6 +211,15 @@ class RequirementChecklistTestCase(unittest.TestCase):
         _, out, _ = self.run_cli("list", "--all")
         return re.findall(r"^\s*\d+\s+(TX-\d+)\s", out, re.M)
 
+    def _month_totals(self, month: str) -> tuple[int, int]:
+        """`summary --month` 의 (총 수입, 총 지출). 거래가 없는 달은 (0, 0)."""
+        _, out, _ = self.run_cli("summary", "--month", month)
+        if "데이터 없음" in out:
+            return 0, 0
+        income = self._group(r"총 수입\s+([\d,]+)원", out)
+        expense = self._group(r"총 지출\s+([\d,]+)원", out)
+        return int(income.replace(",", "")), int(expense.replace(",", ""))
+
     def _listed_row(self, tx_id: str) -> list[str]:
         """`list --all` 표에서 그 거래의 칸(id·날짜·타입·카테고리·금액·메모·태그)을 돌려준다.
 
@@ -539,6 +548,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
         self.assertEqual(self._listed_ids(), listed)
 
     def test_090_import(self) -> None:
+        self.data_dir.mkdir(parents=True, exist_ok=True)  # 000 없이 빈 상태에서 단독 실행할 때
         source = self.data_dir / "import.csv"
         source.write_text(
             "date,type,category,amount,memo,tags\n"
@@ -548,6 +558,14 @@ class RequirementChecklistTestCase(unittest.TestCase):
             "2024-02-11,expense,식비,-100,,\n",  # 음수 금액 → skip
             encoding="utf-8",
         )
+        # 단독 실행(빈 폴더나 직전 실행이 남긴 데이터)에서도 통과하도록, 필요한 카테고리를 갖추고
+        # 집계는 절댓값 대신 import 전후의 차이로 확인한다.
+        registered = {c.name for c in CategoryStore(self.data_dir).list_all()}
+        self.assertNotIn("없는카테고리", registered)
+        for name in ("식비", "월급"):
+            if name not in registered:
+                self.assertEqual(self.run_cli("category", "add", "--name", name)[0], 0)
+        income_before, expense_before = self._month_totals("2024-02")
         listed_before = self._listed_ids()
         code, out, _ = self.run_cli("import", "--from", str(source))
         self.assertEqual(code, 0)
@@ -564,9 +582,8 @@ class RequirementChecklistTestCase(unittest.TestCase):
             ["2024-02-25", "income", "월급", "+3,000,000", "2월 급여"],
         ])
 
-        _, out, _ = self.run_cli("summary", "--month", "2024-02")  # 가져온 데이터가 집계에 반영
-        self.assertIn("총 수입  3,000,000원", out)
-        self.assertIn("총 지출  8,000원", out)
+        totals = self._month_totals("2024-02")  # 가져온 데이터가 집계에 반영
+        self.assertEqual(totals, (income_before + 3_000_000, expense_before + 8_000))
         listed_before = self._listed_ids()
 
         # UTF-8 이 아니거나 따옴표가 맞지 않는 줄은 그 줄만 건너뛰고, 뒤 행을 메모로 흡수하거나 두 행을
@@ -613,8 +630,7 @@ class RequirementChecklistTestCase(unittest.TestCase):
         code, _, err = self.run_cli("import", "--from", str(self.data_dir))  # 파일이 아닌 폴더
         self.assertEqual(code, 1)
         self.assertIn("가져올 CSV 가 파일이 아닙니다", err)
-        _, out, _ = self.run_cli("summary", "--month", "2024-02")
-        self.assertIn("총 지출  8,000원", out)  # 그대로
+        self.assertEqual(self._month_totals("2024-02"), totals)  # 그대로
 
         # 잘못된 행이 많아도 사유는 앞쪽 20건만 담고 나머지는 건수만 센다
         many_bad = self.data_dir / "many_bad.csv"
